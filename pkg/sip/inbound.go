@@ -17,9 +17,10 @@ package sip
 import (
 	"context"
 	"fmt"
-	"github.com/livekit/sip/pkg/media/h264"
 	"sync/atomic"
 	"time"
+
+	"github.com/livekit/sip/pkg/media/h264"
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
@@ -417,7 +418,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, wsUrl, t
 	logger.Infow("Bridging SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "roomName", roomName, "identity", identity)
 	c.playAudio(ctx, c.s.res.roomJoin)
 	if err := c.createLiveKitParticipant(ctx, roomName, identity, wsUrl, token); err != nil {
-		logger.Errorw("Cannot create LiveKit participant", err, "tag", c.tag)
+		logger.Errorw("Cannot create LiveKit participant", err, "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "roomName", roomName, "identity", identity, "wsUrl", wsUrl, "token", token)
 	}
 }
 
