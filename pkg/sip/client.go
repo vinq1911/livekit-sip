@@ -20,30 +20,34 @@ import (
 	"sync"
 
 	"github.com/emiago/sipgo"
+	"github.com/emiago/sipgo/sip"
+	"github.com/frostbyte73/core"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"golang.org/x/exp/maps"
 
-	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/stats"
+	"github.com/vinq1911/livekit-sip/pkg/config"
+	"github.com/vinq1911/livekit-sip/pkg/stats"
 )
 
 type Client struct {
 	conf *config.Config
 	mon  *stats.Monitor
 
-	sipCli      *sipgo.Client
-	signalingIp string
+	sipCli           *sipgo.Client
+	signalingIp      string
+	signalingIpLocal string
 
-	cmu         sync.RWMutex
-	activeCalls map[string]*outboundCall
+	closing     core.Fuse
+	cmu         sync.Mutex
+	activeCalls map[*outboundCall]struct{}
 }
 
 func NewClient(conf *config.Config, mon *stats.Monitor) *Client {
 	c := &Client{
 		conf:        conf,
 		mon:         mon,
-		activeCalls: make(map[string]*outboundCall),
+		activeCalls: make(map[*outboundCall]struct{}),
 	}
 	return c
 }
@@ -54,13 +58,19 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 		if c.signalingIp, err = getPublicIP(); err != nil {
 			return err
 		}
-	} else if c.conf.NAT1To1IP != "" {
-		c.signalingIp = c.conf.NAT1To1IP
-	} else {
-		if c.signalingIp, err = getLocalIP(); err != nil {
+		if c.signalingIpLocal, err = getLocalIP(c.conf.LocalNet); err != nil {
 			return err
 		}
+	} else if c.conf.NAT1To1IP != "" {
+		c.signalingIp = c.conf.NAT1To1IP
+		c.signalingIpLocal = c.signalingIp
+	} else {
+		if c.signalingIp, err = getLocalIP(c.conf.LocalNet); err != nil {
+			return err
+		}
+		c.signalingIpLocal = c.signalingIp
 	}
+	logger.Infow("client starting", "local", c.signalingIpLocal, "external", c.signalingIp)
 
 	if agent == nil {
 		ua, err := sipgo.NewUA(
@@ -71,18 +81,20 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 		}
 		agent = ua
 	}
+
 	c.sipCli, err = sipgo.NewClient(agent, sipgo.WithClientHostname(c.signalingIp))
 	if err != nil {
 		return err
 	}
-	// FIXME: read existing SIP participants from the store?
+
 	return nil
 }
 
 func (c *Client) Stop() {
+	c.closing.Break()
 	c.cmu.Lock()
-	calls := maps.Values(c.activeCalls)
-	c.activeCalls = make(map[string]*outboundCall)
+	calls := maps.Keys(c.activeCalls)
+	c.activeCalls = make(map[*outboundCall]struct{})
 	c.cmu.Unlock()
 	for _, call := range calls {
 		call.Close()
@@ -91,62 +103,90 @@ func (c *Client) Stop() {
 		c.sipCli.Close()
 		c.sipCli = nil
 	}
-	// FIXME: anything else?
 }
 
-func (c *Client) UpdateSIPParticipant(ctx context.Context, req *rpc.InternalUpdateSIPParticipantRequest) (*rpc.InternalUpdateSIPParticipantResponse, error) {
+func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	if req.CallTo == "" {
-		logger.Infow("Disconnect SIP participant",
-			"roomName", req.RoomName, "participant", req.ParticipantId)
-		// Disconnect participant
-		if call := c.getCall(req.ParticipantId); call != nil {
-			call.Close()
-		}
-		return &rpc.InternalUpdateSIPParticipantResponse{}, nil
+		return nil, fmt.Errorf("call-to number must be set")
+	} else if req.Address == "" {
+		return nil, fmt.Errorf("trunk adresss must be set")
+	} else if req.Number == "" {
+		return nil, fmt.Errorf("trunk outbound number must be set")
+	} else if req.RoomName == "" {
+		return nil, fmt.Errorf("room name must be set")
 	}
-	logger.Infow("Updating SIP participant",
-		"roomName", req.RoomName, "participant", req.ParticipantId,
-		"from", req.Number, "to", req.CallTo, "address", req.Address)
-	err := c.getOrCreateCall(req.ParticipantId).Update(ctx, sipOutboundConfig{
-		address: req.Address,
-		from:    req.Number,
-		to:      req.CallTo,
-		user:    req.Username,
-		pass:    req.Password,
-	}, lkRoomConfig{
+	logger.Infow("Creating SIP participant",
+		"roomName", req.RoomName, "from", req.Number, "to", req.CallTo, "address", req.Address)
+	call, err := c.newCall(c.conf, lkRoomConfig{
 		roomName: req.RoomName,
 		identity: req.ParticipantIdentity,
-	}, c.conf)
+		wsUrl:    req.WsUrl,
+		token:    req.Token,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return &rpc.InternalUpdateSIPParticipantResponse{}, nil
+	// Start actual SIP call async.
+	go func() {
+		ctx := context.WithoutCancel(ctx)
+		err := call.UpdateSIP(ctx, sipOutboundConfig{
+			address:  req.Address,
+			from:     req.Number,
+			to:       req.CallTo,
+			user:     req.Username,
+			pass:     req.Password,
+			dtmf:     req.Dtmf,
+			ringtone: req.PlayRingtone,
+		})
+		if err != nil {
+			logger.Errorw("SIP call failed", err,
+				"roomName", req.RoomName, "from", req.Number, "to", req.CallTo, "address", req.Address)
+			return
+		}
+		select {
+		case <-call.Disconnected():
+			call.CloseWithReason("removed")
+		case <-call.Closed():
+		}
+	}()
+
+	p := call.Participant()
+	return &rpc.InternalCreateSIPParticipantResponse{ParticipantId: p.ID, ParticipantIdentity: p.Identity}, nil
 }
 
-func (c *Client) UpdateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalUpdateSIPParticipantRequest) float32 {
-	call := c.getCall(req.ParticipantId)
-	if call != nil {
-		return 1 // Existing participant
+func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) {
+	switch req.Method {
+	case "BYE":
+		c.onBye(req, tx)
 	}
+}
+
+func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) {
+	tag, _ := getTagValue(req)
+	logger.Infow("BYE", "tag", tag)
+	c.cmu.Lock()
+	defer c.cmu.Unlock()
+
+	for c := range c.activeCalls {
+		toHeader, ok := req.To()
+		if !ok {
+			continue
+		}
+
+		fromHeader, ok := req.From()
+		if !ok {
+			continue
+		}
+
+		if c.sipCur.to == fromHeader.Address.User && c.sipCur.from == toHeader.Address.User {
+			go func(call *outboundCall) {
+				call.CloseWithReason("bye")
+			}(c)
+		}
+	}
+}
+
+func (c *Client) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
 	// TODO: scale affinity based on a number or active calls?
 	return 0.5
-}
-
-func (c *Client) SendSIPParticipantDTMF(ctx context.Context, req *rpc.InternalSendSIPParticipantDTMFRequest) (*rpc.InternalSendSIPParticipantDTMFResponse, error) {
-	call := c.getCall(req.ParticipantId)
-	if call == nil {
-		return nil, fmt.Errorf("Cannot send DTMF: participant not connected.")
-	}
-	if err := call.SendDTMF(ctx, req.Digits); err != nil {
-		return nil, err
-	}
-	return &rpc.InternalSendSIPParticipantDTMFResponse{}, nil
-}
-
-func (c *Client) SendSIPParticipantDTMFAffinity(ctx context.Context, req *rpc.InternalSendSIPParticipantDTMFRequest) float32 {
-	call := c.getCall(req.ParticipantId)
-	if call != nil {
-		return 1 // Only existing participants
-	}
-	return 0
 }

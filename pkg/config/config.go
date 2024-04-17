@@ -27,9 +27,9 @@ import (
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/utils"
 	"github.com/livekit/psrpc"
-	lksdk "github.com/livekit/server-sdk-go"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 
-	"github.com/livekit/sip/pkg/errors"
+	"github.com/vinq1911/livekit-sip/pkg/errors"
 )
 
 const (
@@ -51,9 +51,13 @@ type Config struct {
 	SIPPort        int                 `yaml:"sip_port"`
 	RTPPort        rtcconfig.PortRange `yaml:"rtp_port"`
 	Logging        logger.Config       `yaml:"logging"`
+	ClusterID      string              `yaml:"cluster_id"` // cluster this instance belongs to
 
 	UseExternalIP bool   `yaml:"use_external_ip"`
+	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
 	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
+
+	Codecs map[string]bool `yaml:"codecs"`
 
 	// internal
 	ServiceName string `yaml:"-"`
@@ -137,17 +141,41 @@ func (c *Config) GetLoggerFields() logrus.Fields {
 }
 
 func GetLocalIP() (string, error) {
-	addrs, err := net.InterfaceAddrs()
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "", nil
 	}
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String(), nil
+	type Iface struct {
+		Name string
+		Addr net.IP
+	}
+	var candidates []Iface
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagRunning == 0 {
+			continue
+		}
+		if ifc.Flags&(net.FlagPointToPoint|net.FlagLoopback) != 0 {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ip4 := ipnet.IP.To4(); ip4 != nil {
+				candidates = append(candidates, Iface{
+					Name: ifc.Name, Addr: ip4,
+				})
+				logger.Debugw("considering interface", "iface", ifc.Name, "ip", ip4)
 			}
 		}
 	}
-
-	return "", fmt.Errorf("No local IP found")
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("No local IP found")
+	}
+	return candidates[0].Addr.String(), nil
 }

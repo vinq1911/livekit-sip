@@ -15,13 +15,59 @@
 package sip
 
 import (
-	"time"
+	"strconv"
+
+	"github.com/vinq1911/livekit-sip/pkg/media/rtp"
+	"github.com/vinq1911/livekit-sip/pkg/stats"
 )
 
 const (
-	channels      = 1
-	sampleRate    = 8000
-	sampleDur     = 20 * time.Millisecond
-	sampleDurPart = int(time.Second / sampleDur)
-	rtpPacketDur  = uint32(sampleRate / sampleDurPart)
+	channels = 1
 )
+
+func newRTPStatsHandler(mon *stats.CallMonitor, typ string, h rtp.Handler) rtp.Handler {
+	if h == nil {
+		h = rtp.HandlerFunc(func(p *rtp.Packet) error {
+			return nil
+		})
+	}
+	return &rtpStatsHandler{h: h, typ: typ, mon: mon}
+}
+
+type rtpStatsHandler struct {
+	h   rtp.Handler
+	typ string
+	mon *stats.CallMonitor
+}
+
+func (h *rtpStatsHandler) HandleRTP(p *rtp.Packet) error {
+	if h.mon != nil {
+		typ := h.typ
+		if typ == "" {
+			typ = strconv.Itoa(int(p.PayloadType))
+		}
+		h.mon.RTPPacketRecv(typ)
+	}
+	return h.h.HandleRTP(p)
+}
+
+func newRTPStatsWriter(mon *stats.CallMonitor, typ string, w rtp.Writer) rtp.Writer {
+	return &rtpStatsWriter{w: w, typ: typ, mon: mon}
+}
+
+type rtpStatsWriter struct {
+	w   rtp.Writer
+	typ string
+	mon *stats.CallMonitor
+}
+
+func (h *rtpStatsWriter) WriteRTP(p *rtp.Packet) error {
+	if h.mon != nil {
+		typ := h.typ
+		if typ == "" {
+			typ = strconv.Itoa(int(p.PayloadType))
+		}
+		h.mon.RTPPacketSend(typ)
+	}
+	return h.w.WriteRTP(p)
+}

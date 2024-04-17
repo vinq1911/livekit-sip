@@ -1,4 +1,4 @@
-// Copyright 2023 LiveKit, Inc.
+// Copyright 2024 LiveKit, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
 
 package sip
 
-var dtmfEventToChar = [256]byte{
-	0: '0', 1: '1', 2: '2', 3: '3', 4: '4',
-	5: '5', 6: '6', 7: '7', 8: '8', 9: '9',
-	10: '*', 11: '#',
-	12: 'a', 13: 'b', 14: 'c', 15: 'd',
-}
+// Register supported audio codecs
+import (
+	_ "github.com/vinq1911/livekit-sip/pkg/media/dtmf"
+	_ "github.com/vinq1911/livekit-sip/pkg/media/g722"
+	_ "github.com/vinq1911/livekit-sip/pkg/media/ulaw"
+)

@@ -27,11 +27,11 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
 
-	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/errors"
-	"github.com/livekit/sip/pkg/service"
-	"github.com/livekit/sip/pkg/sip"
-	"github.com/livekit/sip/version"
+	"github.com/vinq1911/livekit-sip/pkg/config"
+	"github.com/vinq1911/livekit-sip/pkg/errors"
+	"github.com/vinq1911/livekit-sip/pkg/service"
+	"github.com/vinq1911/livekit-sip/pkg/sip"
+	"github.com/vinq1911/livekit-sip/version"
 )
 
 func main() {
@@ -89,8 +89,7 @@ func runService(c *cli.Context) error {
 	}
 
 	svc := service.NewService(conf, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus)
-	sipsrv.SetAuthHandler(svc.HandleTrunkAuthentication)
-	sipsrv.SetDispatchRuleHandlerFunc(svc.HandleDispatchRules)
+	sipsrv.SetHandler(svc)
 
 	if err = sipsrv.Start(); err != nil {
 		return err

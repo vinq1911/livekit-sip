@@ -17,7 +17,7 @@ package opus
 import (
 	"gopkg.in/hraban/opus.v2"
 
-	"github.com/livekit/sip/pkg/media"
+	"github.com/vinq1911/livekit-sip/pkg/media"
 )
 
 type Sample []byte

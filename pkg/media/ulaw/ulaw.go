@@ -15,8 +15,22 @@
 package ulaw
 
 import (
-	"github.com/livekit/sip/pkg/media"
+	prtp "github.com/pion/rtp"
+
+	"github.com/vinq1911/livekit-sip/pkg/media"
+	"github.com/vinq1911/livekit-sip/pkg/media/rtp"
 )
+
+const SDPName = "PCMU/8000"
+
+func init() {
+	media.RegisterCodec(rtp.NewAudioCodec(media.CodecInfo{
+		SDPName:     SDPName,
+		RTPDefType:  prtp.PayloadTypePCMU,
+		RTPIsStatic: true,
+		Priority:    -10,
+	}, Decode, Encode))
+}
 
 type Sample []byte
 

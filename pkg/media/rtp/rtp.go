@@ -15,10 +15,12 @@
 package rtp
 
 import (
+	"sync"
+
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
 
-	"github.com/livekit/sip/pkg/media"
+	"github.com/vinq1911/livekit-sip/pkg/media"
 )
 
 type Writer interface {
@@ -52,13 +54,22 @@ func HandleLoop(r Reader, h Handler) error {
 	}
 }
 
-func NewStream(w Writer, packetDur uint32) *Stream {
-	s := &Stream{w: w, packetDur: packetDur}
+// Buffer is a Writer that clones and appends RTP packets into a slice.
+type Buffer []*Packet
+
+func (b *Buffer) WriteRTP(p *Packet) error {
+	p2 := p.Clone()
+	*b = append(*b, p2)
+	return nil
+}
+
+// NewSeqWriter creates an RTP writer that automatically increments the sequence number.
+func NewSeqWriter(w Writer) *SeqWriter {
+	s := &SeqWriter{w: w}
 	s.p = rtp.Packet{
 		Header: rtp.Header{
 			Version:        2,
 			SSRC:           5000, // TODO: why this magic number?
-			Timestamp:      0,
 			SequenceNumber: 0,
 		},
 	}
@@ -67,24 +78,71 @@ func NewStream(w Writer, packetDur uint32) *Stream {
 
 type Packet = rtp.Packet
 
-type Stream struct {
-	w         Writer
-	p         Packet
-	packetDur uint32
+type Event struct {
+	Type      byte
+	Timestamp uint32
+	Payload   []byte
+	Marker    bool
 }
 
-func (s *Stream) WritePayload(data []byte) error {
-	s.p.Payload = data
+type SeqWriter struct {
+	mu sync.Mutex
+	w  Writer
+	p  Packet
+}
+
+func (s *SeqWriter) WriteEvent(ev *Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.p.PayloadType = ev.Type
+	s.p.Payload = ev.Payload
+	s.p.Marker = ev.Marker
+	s.p.Timestamp = ev.Timestamp
 	if err := s.w.WriteRTP(&s.p); err != nil {
 		return err
 	}
-	s.p.Header.Timestamp += s.packetDur
 	s.p.Header.SequenceNumber++
 	return nil
 }
 
-func NewMediaStreamOut[T ~[]byte](w Writer, packetDur uint32) *MediaStreamOut[T] {
-	return &MediaStreamOut[T]{s: NewStream(w, packetDur)}
+// NewStream creates a new media stream in RTP and tracks timestamps associated with it.
+func (s *SeqWriter) NewStream(typ byte) *Stream {
+	return s.NewStreamWithDur(typ, DefPacketDur)
+}
+
+func (s *SeqWriter) NewStreamWithDur(typ byte, packetDur uint32) *Stream {
+	st := &Stream{s: s, packetDur: packetDur}
+	st.ev.Type = typ
+	return st
+}
+
+type Stream struct {
+	s         *SeqWriter
+	packetDur uint32
+	mu        sync.Mutex
+	ev        Event
+}
+
+func (s *Stream) WritePayload(data []byte, marker bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ev.Payload = data
+	s.ev.Marker = marker
+	if err := s.s.WriteEvent(&s.ev); err != nil {
+		return err
+	}
+	s.ev.Timestamp += s.packetDur
+	return nil
+}
+
+func (s *Stream) Delay(dur uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ev.Timestamp += dur
+}
+
+func NewMediaStreamOut[T ~[]byte](s *Stream) *MediaStreamOut[T] {
+	return &MediaStreamOut[T]{s: s}
 }
 
 type MediaStreamOut[T ~[]byte] struct {
@@ -92,7 +150,7 @@ type MediaStreamOut[T ~[]byte] struct {
 }
 
 func (s *MediaStreamOut[T]) WriteSample(sample T) error {
-	return s.s.WritePayload([]byte(sample))
+	return s.s.WritePayload([]byte(sample), false)
 }
 
 func NewMediaStreamIn[T ~[]byte](w media.Writer[T]) *MediaStreamIn[T] {

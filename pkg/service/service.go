@@ -28,8 +28,9 @@ import (
 	"github.com/livekit/psrpc"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/version"
+	"github.com/vinq1911/livekit-sip/pkg/config"
+	"github.com/vinq1911/livekit-sip/pkg/sip"
+	"github.com/vinq1911/livekit-sip/version"
 )
 
 const shutdownTimer = time.Second * 5
@@ -44,7 +45,8 @@ type Service struct {
 	psrpcClient rpc.IOInfoClient
 	bus         psrpc.MessageBus
 
-	promServer *http.Server
+	promServer   *http.Server
+	rpcSIPServer rpc.SIPInternalServer
 
 	sipServiceStop        sipServiceStopFunc
 	sipServiceActiveCalls sipServiceActiveCallsFunc
@@ -66,8 +68,6 @@ func NewService(
 
 		sipServiceStop:        sipServiceStop,
 		sipServiceActiveCalls: sipServiceActiveCalls,
-
-		shutdown: core.NewFuse(),
 	}
 	if conf.PrometheusPort > 0 {
 		s.promServer = &http.Server{
@@ -97,11 +97,15 @@ func (s *Service) Run() error {
 		}()
 	}
 
-	srv, err := rpc.NewSIPInternalServer(s.psrpcServer, s.bus)
-	if err != nil {
+	var err error
+	if s.rpcSIPServer, err = rpc.NewSIPInternalServer(s.psrpcServer, s.bus); err != nil {
 		return err
 	}
-	defer srv.Shutdown()
+	defer s.rpcSIPServer.Shutdown()
+
+	if err := s.RegisterCreateSIPParticipantTopic(); err != nil {
+		return err
+	}
 
 	logger.Debugw("service ready")
 
@@ -109,6 +113,7 @@ func (s *Service) Run() error {
 		select {
 		case <-s.shutdown.Watch():
 			logger.Infow("shutting down")
+			s.DeregisterCreateSIPParticipantTopic()
 
 			if !s.killed.Load() {
 				activeCalls := s.sipServiceActiveCalls()
@@ -125,8 +130,8 @@ func (s *Service) Run() error {
 	}
 }
 
-func (s *Service) HandleTrunkAuthentication(from, to, toHost, srcAddress string) (username, password string, err error) {
-	resp, err := s.psrpcClient.GetSIPTrunkAuthentication(context.TODO(), &rpc.GetSIPTrunkAuthenticationRequest{
+func (s *Service) GetAuthCredentials(ctx context.Context, from, to, toHost, srcAddress string) (username, password string, drop bool, err error) {
+	resp, err := s.psrpcClient.GetSIPTrunkAuthentication(ctx, &rpc.GetSIPTrunkAuthenticationRequest{
 		From:       from,
 		To:         to,
 		ToHost:     toHost,
@@ -134,30 +139,72 @@ func (s *Service) HandleTrunkAuthentication(from, to, toHost, srcAddress string)
 	})
 
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 
-	return resp.Username, resp.Password, nil
+	return resp.Username, resp.Password, resp.Drop, nil
 }
 
-func (s *Service) HandleDispatchRules(ctx context.Context, callingNumber, calledNumber, calledHost, srcAddress string, pin string, noPin bool) (joinRoom, identity, wsUrl, token string, requestPin, rejectInvite bool) {
+func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.CallDispatch {
 	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(ctx, &rpc.EvaluateSIPDispatchRulesRequest{
-		CallingNumber: callingNumber,
-		CalledNumber:  calledNumber,
-		CalledHost:    calledHost,
-		SrcAddress:    srcAddress,
-		Pin:           pin,
-		NoPin:         noPin,
+		CallingNumber: info.FromUser,
+		CalledNumber:  info.ToUser,
+		CalledHost:    info.ToHost,
+		SrcAddress:    info.SrcAddress,
+		Pin:           info.Pin,
+		NoPin:         info.NoPin,
 	})
 
 	if err != nil {
 		logger.Warnw("SIP handle dispatch rule error", err)
-		return "", "", "", "", false, true
+		return sip.CallDispatch{Result: sip.DispatchNoRuleReject}
 	}
-
-	return resp.RoomName, resp.ParticipantIdentity, resp.WsUrl, resp.Token, resp.RequestPin, false
+	switch resp.Result {
+	default:
+		logger.Errorw("SIP handle dispatch rule error", fmt.Errorf("unexpected dispatch result: %v", resp.Result))
+		return sip.CallDispatch{Result: sip.DispatchNoRuleReject}
+	case rpc.SIPDispatchResult_LEGACY_ACCEPT_OR_PIN:
+		if resp.RequestPin {
+			return sip.CallDispatch{Result: sip.DispatchRequestPin}
+		}
+		return sip.CallDispatch{
+			Result:   sip.DispatchAccept,
+			RoomName: resp.RoomName,
+			Identity: resp.ParticipantIdentity,
+			WsUrl:    resp.WsUrl,
+			Token:    resp.Token,
+		}
+	case rpc.SIPDispatchResult_ACCEPT:
+		return sip.CallDispatch{
+			Result:   sip.DispatchAccept,
+			RoomName: resp.RoomName,
+			Identity: resp.ParticipantIdentity,
+			WsUrl:    resp.WsUrl,
+			Token:    resp.Token,
+		}
+	case rpc.SIPDispatchResult_REQUEST_PIN:
+		return sip.CallDispatch{Result: sip.DispatchRequestPin}
+	case rpc.SIPDispatchResult_REJECT:
+		return sip.CallDispatch{Result: sip.DispatchNoRuleReject}
+	case rpc.SIPDispatchResult_DROP:
+		return sip.CallDispatch{Result: sip.DispatchNoRuleDrop}
+	}
 }
 
 func (s *Service) CanAccept() bool {
 	return !s.shutdown.IsBroken()
+}
+
+func (s *Service) RegisterCreateSIPParticipantTopic() error {
+	if s.rpcSIPServer != nil {
+		return s.rpcSIPServer.RegisterCreateSIPParticipantTopic(s.conf.ClusterID)
+	}
+
+	return nil
+}
+
+func (s *Service) DeregisterCreateSIPParticipantTopic() {
+	if s.rpcSIPServer != nil {
+		s.rpcSIPServer.DeregisterCreateSIPParticipantTopic(s.conf.ClusterID)
+	}
 }

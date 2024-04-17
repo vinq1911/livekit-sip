@@ -15,9 +15,10 @@
 package h264
 
 import (
-	m "github.com/livekit/sip/pkg/media"
-	"github.com/pion/webrtc/v3/pkg/media"
 	"time"
+
+	"github.com/pion/webrtc/v3/pkg/media"
+	m "github.com/vinq1911/livekit-sip/pkg/media"
 )
 
 type Sample []byte

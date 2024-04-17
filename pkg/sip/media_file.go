@@ -20,9 +20,9 @@ import (
 	"github.com/at-wat/ebml-go"
 	"github.com/at-wat/ebml-go/webm"
 
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/ulaw"
-	"github.com/livekit/sip/res"
+	"github.com/vinq1911/livekit-sip/pkg/media"
+	"github.com/vinq1911/livekit-sip/pkg/media/ulaw"
+	"github.com/vinq1911/livekit-sip/res"
 )
 
 type mediaRes struct {

@@ -1,9 +1,11 @@
 <!--BEGIN_BANNER_IMAGE-->
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="/.github/banner_dark.png">
   <source media="(prefers-color-scheme: light)" srcset="/.github/banner_light.png">
   <img style="width:100%;" alt="The LiveKit icon, the name of the repository and some sample code in the background." src="https://raw.githubusercontent.com/livekit/sip/main/.github/banner_light.png">
 </picture>
+
 <!--END_BANNER_IMAGE-->
 
 <h1 align="center">Project is in active development</h1>
@@ -36,6 +38,8 @@ To accept SIP traffic into your running SIP service, the workflow goes like this
 * create an SIP Dispatch Rule with `CreateSIPDispatchRule` API (to livekit-server)
 * SIP service receives a call
 * SIP service connects to the LiveKit room and SIP caller is a participant
+
+See [SIP Quickstart](https://docs.livekit.io/sip/quickstart/) for a full guide.
 
 ### Service Architecture
 
@@ -78,7 +82,7 @@ The `SIP Bridge` is used to authenticate incoming traffic. Typically you will cr
 SIP providers and their IP Ranges/Authentication details.
 
 ```shell
-livekit-cli create-sip-bridge \
+livekit-cli create-sip-trunk \
   --request <path to SIP Trunk creation request JSON file>
 ```
 
@@ -90,9 +94,9 @@ The SIP Bridge request creation JSON file uses the following syntax:
     "outbound_address": IP Address that SIP INVITEs will be sent too
     "outbound_number": When making an outbound call on this SIP Trunk what Phone Number should be used
     "inbound_numbers_regex": Phone numbers this SIP Trunk will serve. If Empty it will serve all incoming calls,
-    "inbound_user": Username for Authentication of inbound calls, no Authentication if empty,
+    "inbound_username": Username for Authentication of inbound calls, no Authentication if empty,
     "inbound_password": Password for Authentication of inbound calls, no Authentication if empty,
-    "outbound_user": Username for Authentication of outbound calls, no Authentication if empty,
+    "outbound_username": Username for Authentication of outbound calls, no Authentication if empty,
     "outbound_password": Password for Authentication of outbound calls, no Authentication if empty
 }
 ```
@@ -216,7 +220,7 @@ docker run --rm \
 <tbody>
 <tr><td>Real-time SDKs</td><td><a href="https://github.com/livekit/components-js">React Components</a> · <a href="https://github.com/livekit/client-sdk-js">JavaScript</a> · <a href="https://github.com/livekit/client-sdk-swift">iOS/macOS</a> · <a href="https://github.com/livekit/client-sdk-android">Android</a> · <a href="https://github.com/livekit/client-sdk-flutter">Flutter</a> · <a href="https://github.com/livekit/client-sdk-react-native">React Native</a> · <a href="https://github.com/livekit/client-sdk-rust">Rust</a> · <a href="https://github.com/livekit/client-sdk-python">Python</a> · <a href="https://github.com/livekit/client-sdk-unity-web">Unity (web)</a> · <a href="https://github.com/livekit/client-sdk-unity">Unity (beta)</a></td></tr><tr></tr>
 <tr><td>Server APIs</td><td><a href="https://github.com/livekit/server-sdk-js">Node.js</a> · <a href="https://github.com/livekit/server-sdk-go">Golang</a> · <a href="https://github.com/livekit/server-sdk-ruby">Ruby</a> · <a href="https://github.com/livekit/server-sdk-kotlin">Java/Kotlin</a> · <a href="https://github.com/livekit/client-sdk-python">Python</a> · <a href="https://github.com/livekit/client-sdk-rust">Rust</a> · <a href="https://github.com/agence104/livekit-server-sdk-php">PHP (community)</a></td></tr><tr></tr>
-<tr><td>Agents Frameworks</td><td><a href="https://github.com/livekit/python-agents">Python</a></td></tr><tr></tr>
+<tr><td>Agents Frameworks</td><td><a href="https://github.com/livekit/agents">Python</a> · <a href="https://github.com/livekit/agent-playground">Playground</a></td></tr><tr></tr>
 <tr><td>Services</td><td><a href="https://github.com/livekit/livekit">Livekit server</a> · <a href="https://github.com/livekit/egress">Egress</a> · <a href="https://github.com/livekit/ingress">Ingress</a> · <b>SIP</b></td></tr><tr></tr>
 <tr><td>Resources</td><td><a href="https://docs.livekit.io">Docs</a> · <a href="https://github.com/livekit-examples">Example apps</a> · <a href="https://livekit.io/cloud">Cloud</a> · <a href="https://docs.livekit.io/oss/deployment">Self-hosting</a> · <a href="https://github.com/livekit/livekit-cli">CLI</a></td></tr>
 </tbody>

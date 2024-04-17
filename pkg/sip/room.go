@@ -16,18 +16,28 @@ package sip
 
 import (
 	"context"
-	"github.com/livekit/sip/pkg/media/h264"
+	"sync/atomic"
 
-	"github.com/livekit/protocol/logger"
-	lksdk "github.com/livekit/server-sdk-go"
+	"github.com/vinq1911/livekit-sip/pkg/media/h264"
+
+	"github.com/frostbyte73/core"
 	"github.com/pion/webrtc/v3"
 
-	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/opus"
-	"github.com/livekit/sip/pkg/media/rtp"
-	"github.com/livekit/sip/pkg/mixer"
+	"github.com/livekit/protocol/logger"
+	lksdk "github.com/livekit/server-sdk-go/v2"
+
+	"github.com/vinq1911/livekit-sip/pkg/config"
+	"github.com/vinq1911/livekit-sip/pkg/media"
+	"github.com/vinq1911/livekit-sip/pkg/media/opus"
+	"github.com/vinq1911/livekit-sip/pkg/media/rtp"
+	"github.com/vinq1911/livekit-sip/pkg/mixer"
 )
+
+type Participant struct {
+	ID       string
+	RoomName string
+	Identity string
+}
 
 type Room struct {
 	room     *lksdk.Room
@@ -35,17 +45,29 @@ type Room struct {
 	audioOut media.SwitchWriter[media.PCM16Sample]
 	videoOut media.SwitchWriter[h264.Sample]
 	identity string
+	p        Participant
+	ready    atomic.Bool
+	stopped  core.Fuse
 }
 
 type lkRoomConfig struct {
 	roomName string
 	identity string
+	wsUrl    string
+	token    string
 }
 
 func NewRoom() *Room {
 	r := &Room{}
-	r.mix = mixer.NewMixer(&r.audioOut, sampleRate)
+	r.mix = mixer.NewMixer(&r.audioOut, rtp.DefFrameDur, rtp.DefSampleRate)
 	return r
+}
+
+func (r *Room) Closed() <-chan struct{} {
+	if r == nil {
+		return nil
+	}
+	return r.stopped.Watch()
 }
 
 func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token string) error {
@@ -53,27 +75,30 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 		err  error
 		room *lksdk.Room
 	)
-	r.identity = identity
+	r.p = Participant{RoomName: roomName, Identity: identity}
 	roomCallback := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
-			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				if track.Kind() != webrtc.RTPCodecTypeAudio {
-					if err := pub.SetSubscribed(false); err != nil {
-						logger.Errorw("Cannot unsubscribe from the track", err)
+			OnTrackPublished: func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				if publication.Kind() == lksdk.TrackKindAudio {
+					if err := publication.SetSubscribed(true); err != nil {
+						logger.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
 					}
-					return
 				}
+			},
+			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				mTrack := r.NewTrack()
+				defer mTrack.Close()
 
-				mtrack := r.NewTrack()
-				defer mtrack.Close()
-
-				odec, err := opus.Decode(mtrack, sampleRate, channels)
+				odec, err := opus.Decode(mTrack, rtp.DefSampleRate, channels)
 				if err != nil {
 					return
 				}
 				h := rtp.NewMediaStreamIn[opus.Sample](odec)
 				_ = rtp.HandleLoop(track, h)
 			},
+		},
+		OnDisconnected: func() {
+			r.stopped.Break()
 		},
 	}
 
@@ -84,7 +109,8 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 				APISecret:           conf.ApiSecret,
 				RoomName:            roomName,
 				ParticipantIdentity: identity,
-			}, roomCallback)
+				ParticipantKind:     lksdk.ParticipantSIP,
+			}, roomCallback, lksdk.WithAutoSubscribe(false))
 	} else {
 		room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback)
 	}
@@ -93,9 +119,13 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 		return err
 	}
 	r.room = room
+	r.p.ID = r.room.LocalParticipant.SID()
+	r.p.Identity = r.room.LocalParticipant.Identity()
+	r.ready.Store(true)
 	return nil
 }
 
+// / might be obsolete
 func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room, error) {
 	r := NewRoom()
 	if err := r.Connect(conf, roomName, identity, "", ""); err != nil {
@@ -108,7 +138,9 @@ func (r *Room) AudioOutput() media.Writer[media.PCM16Sample] {
 	return r.audioOut.Get()
 }
 
-func (r *Room) VideoOutput() media.Writer[h264.Sample] { return r.videoOut.Get() }
+func (r *Room) VideoOutput() media.Writer[h264.Sample] {
+	return r.videoOut.Get()
+}
 
 func (r *Room) SetAudioOutput(out media.Writer[media.PCM16Sample]) {
 	if r == nil {
@@ -125,6 +157,7 @@ func (r *Room) SetVideoOutput(out media.Writer[h264.Sample]) {
 }
 
 func (r *Room) Close() error {
+	r.ready.Store(false)
 	if r.room != nil {
 		r.room.Disconnect()
 		r.room = nil
@@ -136,7 +169,14 @@ func (r *Room) Close() error {
 	return nil
 }
 
-func (r *Room) NewParticipant() (media.Writer[media.PCM16Sample], media.Writer[h264.Sample], error) {
+func (r *Room) Participant() Participant {
+	if r == nil {
+		return Participant{}
+	}
+	return r.p
+}
+
+func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Writer[h264.Sample], error) {
 	audioTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, r.identity+"-audio", r.identity+"-audio-pion")
 	if err != nil {
 		return nil, nil, err
@@ -147,8 +187,9 @@ func (r *Room) NewParticipant() (media.Writer[media.PCM16Sample], media.Writer[h
 		return nil, nil, err
 	}
 
-	if _, err = r.room.LocalParticipant.PublishTrack(audioTrack, &lksdk.TrackPublicationOptions{
-		Name: r.identity,
+	p := r.room.LocalParticipant
+	if _, err = p.PublishTrack(audioTrack, &lksdk.TrackPublicationOptions{
+		Name: p.identity,
 	}); err != nil {
 		return nil, nil, err
 	}
@@ -161,10 +202,9 @@ func (r *Room) NewParticipant() (media.Writer[media.PCM16Sample], media.Writer[h
 		return nil, nil, err
 	}
 
-	//ow方法 构造写入opus encode后的字节数据方法，并通过audioTrack写入livekit
-	ow := media.FromSampleWriter[opus.Sample](audioTrack, sampleDur)
-	//pw方法 构造输入int16 opus encode后输出[]byte数据
-	pw, err := opus.Encode(ow, sampleRate, channels)
+	ow := media.FromSampleWriter[opus.Sample](audioTrack, rtp.DefFrameDur)
+	pw, err := opus.Encode(ow, rtp.DefSampleRate, channels)
+
 	if err != nil {
 		return nil, nil, err
 	}
@@ -173,23 +213,30 @@ func (r *Room) NewParticipant() (media.Writer[media.PCM16Sample], media.Writer[h
 	return pw, vw, nil
 }
 
+func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error {
+	if r == nil || !r.ready.Load() {
+		return nil
+	}
+	return r.room.LocalParticipant.PublishDataPacket(data, opts...)
+}
+
 func (r *Room) NewTrack() *Track {
-	inp := r.mix.AddInput()
-	return &Track{room: r, inp: inp}
+	inp := r.mix.NewInput()
+	return &Track{mix: r.mix, inp: inp}
 }
 
 type Track struct {
-	room *Room
-	inp  *mixer.Input
+	mix *mixer.Mixer
+	inp *mixer.Input
 }
 
 func (t *Track) Close() error {
-	t.room.mix.RemoveInput(t.inp)
+	t.mix.RemoveInput(t.inp)
 	return nil
 }
 
 func (t *Track) PlayAudio(ctx context.Context, frames []media.PCM16Sample) {
-	_ = media.PlayAudio[media.PCM16Sample](ctx, t, sampleDur, frames)
+	_ = media.PlayAudio[media.PCM16Sample](ctx, t, rtp.DefFrameDur, frames)
 }
 
 func (t *Track) WriteSample(pcm media.PCM16Sample) error {

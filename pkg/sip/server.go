@@ -17,15 +17,17 @@ package sip
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
+	"github.com/livekit/protocol/logger"
 	"golang.org/x/exp/maps"
 
-	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/stats"
+	"github.com/vinq1911/livekit-sip/pkg/config"
+	"github.com/vinq1911/livekit-sip/pkg/stats"
 )
 
 const (
@@ -37,22 +39,52 @@ var (
 	contentTypeHeaderSDP = sip.ContentTypeHeader("application/sdp")
 )
 
-type AuthHandlerFunc func(fromUser, toUser, toHost, srcAddress string) (username, password string, err error)
-type DispatchRuleHandlerFunc func(ctx context.Context, fromUser, toUser, toHost, srcAddress string, pin string, noPin bool) (joinRoom, identity, wsUrl, token string, requestPin, rejectInvite bool)
+type CallInfo struct {
+	FromUser   string
+	ToUser     string
+	ToHost     string
+	SrcAddress string
+	Pin        string
+	NoPin      bool
+}
+
+type DispatchResult int
+
+const (
+	DispatchAccept = DispatchResult(iota)
+	DispatchRequestPin
+	DispatchNoRuleReject // reject the call with an error
+	DispatchNoRuleDrop   // silently drop the call
+)
+
+type CallDispatch struct {
+	Result   DispatchResult
+	RoomName string
+	Identity string
+	WsUrl    string
+	Token    string
+}
+
+type Handler interface {
+	GetAuthCredentials(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error)
+	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
+}
 
 type Server struct {
-	mon         *stats.Monitor
-	sipSrv      *sipgo.Server
-	signalingIp string
+	mon              *stats.Monitor
+	sipSrv           *sipgo.Server
+	sipConn          *net.UDPConn
+	sipUnhandled     sipgo.RequestHandler
+	signalingIp      string
+	signalingIpLocal string
 
 	inProgressInvites []*inProgressInvite
 
 	cmu         sync.RWMutex
 	activeCalls map[string]*inboundCall
 
-	authHandler         AuthHandlerFunc
-	dispatchRuleHandler DispatchRuleHandlerFunc
-	conf                *config.Config
+	handler Handler
+	conf    *config.Config
 
 	res mediaRes
 }
@@ -73,12 +105,8 @@ func NewServer(conf *config.Config, mon *stats.Monitor) *Server {
 	return s
 }
 
-func (s *Server) SetAuthHandler(handler AuthHandlerFunc) {
-	s.authHandler = handler
-}
-
-func (s *Server) SetDispatchRuleHandlerFunc(handler DispatchRuleHandlerFunc) {
-	s.dispatchRuleHandler = handler
+func (s *Server) SetHandler(handler Handler) {
+	s.handler = handler
 }
 
 func getTagValue(req *sip.Request) (string, error) {
@@ -99,19 +127,25 @@ func sipErrorResponse(tx sip.ServerTransaction, req *sip.Request) {
 	_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
 }
 
-func (s *Server) Start(agent *sipgo.UserAgent) error {
+func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) error {
 	var err error
 	if s.conf.UseExternalIP {
 		if s.signalingIp, err = getPublicIP(); err != nil {
 			return err
 		}
-	} else if s.conf.NAT1To1IP != "" {
-		s.signalingIp = s.conf.NAT1To1IP
-	} else {
-		if s.signalingIp, err = getLocalIP(); err != nil {
+		if s.signalingIpLocal, err = getLocalIP(s.conf.LocalNet); err != nil {
 			return err
 		}
+	} else if s.conf.NAT1To1IP != "" {
+		s.signalingIp = s.conf.NAT1To1IP
+		s.signalingIpLocal = s.signalingIp
+	} else {
+		if s.signalingIp, err = getLocalIP(s.conf.LocalNet); err != nil {
+			return err
+		}
+		s.signalingIpLocal = s.signalingIp
 	}
+	logger.Infow("server starting", "local", s.signalingIpLocal, "external", s.signalingIp)
 
 	if agent == nil {
 		ua, err := sipgo.NewUA(
@@ -130,13 +164,24 @@ func (s *Server) Start(agent *sipgo.UserAgent) error {
 
 	s.sipSrv.OnInvite(s.onInvite)
 	s.sipSrv.OnBye(s.onBye)
+	s.sipUnhandled = unhandled
 
 	// Ignore ACKs
 	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
 
-	// TODO: pass proper context here
+	lis, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP:   net.IPv4(0, 0, 0, 0),
+		Port: s.conf.SIPPort,
+	})
+	if err != nil {
+		return fmt.Errorf("cannot listen on the signaling port %d: %w", s.conf.SIPPort, err)
+	}
+	s.sipConn = lis
+
 	go func() {
-		panic(s.sipSrv.ListenAndServe(context.TODO(), "udp", fmt.Sprintf("0.0.0.0:%d", s.conf.SIPPort)))
+		if err := s.sipSrv.ServeUDP(lis); err != nil {
+			panic(fmt.Errorf("SIP listen UDP error: %w", err))
+		}
 	}()
 
 	return nil
@@ -152,5 +197,8 @@ func (s *Server) Stop() {
 	}
 	if s.sipSrv != nil {
 		s.sipSrv.Close()
+	}
+	if s.sipConn != nil {
+		s.sipConn.Close()
 	}
 }
