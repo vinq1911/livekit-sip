@@ -309,12 +309,16 @@ type sdpCodecResult struct {
 }
 
 func sdpGetCodecAndType(offer sdp.SessionDescription) (*sdpCodecResult, error) {
+
 	audio, video := sdpGetAudioVideo(offer)
 	if audio == nil {
 		return nil, errors.New("no audio in sdp")
 	}
 	audioAttrs, err := sdpGetCodec(audio.Attributes)
-	audioAttrs.VideoType = sdpGetVideoType(video.Attributes)
+
+	if video != nil {
+		audioAttrs.VideoType = sdpGetVideoType(video.Attributes)
+	}
 
 	return audioAttrs, err
 }
