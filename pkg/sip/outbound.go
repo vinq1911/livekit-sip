@@ -53,19 +53,19 @@ type sipOutboundConfig struct {
 type outboundCall struct {
 	c             *Client
 	participantID string
-	audioRtpConn  *MediaConn
-	videoRtpConn  *MediaConn
+	audioRtpConn  *rtp.Conn
+	videoRtpConn  *rtp.Conn
 
-	rtpConn    *rtp.Conn // obsolete
-	rtpOut     *rtp.SeqWriter
-	rtpAudio   *rtp.Stream
-	rtpDTMF    *rtp.Stream
-	audioCodec rtp.AudioCodec
-	audioOut   media.Writer[media.PCM16Sample]
-	audioType  byte
-	dtmfType   byte
-	stopped    core.Fuse
-
+	rtpOut        *rtp.SeqWriter
+	rtpAudio      *rtp.Stream
+	rtpDTMF       *rtp.Stream
+	audioCodec    rtp.AudioCodec
+	audioOut      media.Writer[media.PCM16Sample]
+	audioType     byte
+	videoType     byte
+	dtmfType      byte
+	stopped       core.Fuse
+	lkCur         lkRoomConfig
 	mu            sync.RWMutex
 	mon           *stats.CallMonitor
 	mediaRunning  bool
@@ -82,7 +82,10 @@ func (c *Client) newCall(conf *config.Config, room lkRoomConfig) (*outboundCall,
 	call := &outboundCall{
 		c: c,
 	}
-	call.rtpConn = rtp.NewConn(func() {
+	call.videoRtpConn = rtp.NewConn(func() {
+		call.close("media-timeout")
+	})
+	call.audioRtpConn = rtp.NewConn(func() {
 		call.close("media-timeout")
 	})
 
@@ -99,16 +102,6 @@ func (c *Client) newCall(conf *config.Config, room lkRoomConfig) (*outboundCall,
 	defer c.cmu.Unlock()
 	c.activeCalls[call] = struct{}{}
 	return call, nil
-}
-
-func (c *Client) newCall(participantId string) *outboundCall {
-	call := &outboundCall{
-		c:             c,
-		participantID: participantId,
-		audioRtpConn:  NewMediaConn(),
-		videoRtpConn:  NewMediaConn(),
-	}
-	return c.lkRoom.Closed()
 }
 
 func (c *outboundCall) Closed() <-chan struct{} {
@@ -140,8 +133,6 @@ func (c *outboundCall) close(reason string) {
 		return
 	}
 	c.stopped.Break()
-	c.rtpConn.OnRTP(nil)
-	c.lkRoom.SetOutput(nil)
 	c.audioRtpConn.OnRTP(nil)
 	c.videoRtpConn.OnRTP(nil)
 	c.lkRoom.SetAudioOutput(nil)
@@ -160,7 +151,6 @@ func (c *outboundCall) close(reason string) {
 	c.lkRoomAudioIn = nil
 	c.lkRoomVideoIn = nil
 	c.lkCur = lkRoomConfig{}
-	c.lkRoomIn = nil
 
 	c.stopSIP(reason)
 	c.sipCur = sipOutboundConfig{}
@@ -209,10 +199,10 @@ func (c *outboundCall) startMedia(conf *config.Config) error {
 	if c.mediaRunning {
 		return nil
 	}
-	if err := c.audioRtpConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	if err := c.audioRtpConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return err
 	}
-	if err := c.videoRtpConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	if err := c.videoRtpConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return err
 	}
 	logger.Debugw("begin listening on UDP ports:", "audio", c.audioRtpConn.LocalAddr().Port, "video", c.videoRtpConn.LocalAddr().Port)
@@ -231,7 +221,7 @@ func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
 	if err := r.Connect(c.c.conf, lkNew.roomName, lkNew.identity, lkNew.wsUrl, lkNew.token); err != nil {
 		return err
 	}
-	audioTrack, videoTrack, err := r.NewParticipant()
+	audioTrack, videoTrack, err := r.NewParticipantTrack()
 	if err != nil {
 		_ = r.Close()
 		return err
@@ -253,7 +243,7 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
 
-		go tones.Play(rctx, c.lkRoomIn, ringVolume, tones.ETSIRinging)
+		go tones.Play(rctx, c.lkRoomAudioIn, ringVolume, tones.ETSIRinging)
 	}
 	err := c.sipSignal(sipNew)
 	if err != nil {
@@ -280,15 +270,17 @@ func (c *outboundCall) relinkMedia() {
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
-	aus := rtp.NewMediaStreamOut[ulaw.Sample](c.audioRtpConn, rtpPacketDur)
-	c.lkRoom.SetAudioOutput(ulaw.Encode(aus))
+	c.lkRoom.SetAudioOutput(c.audioOut)
 
-	vis := rtp.NewMediaStreamOut[h264.Sample](c.videoRtpConn, rtpPacketDur)
+	sw := rtp.NewSeqWriter(c.videoRtpConn)
+	st := sw.NewStream(c.videoType)
+
+	vis := rtp.NewMediaStreamOut[h264.Sample](st)
 	c.lkRoom.SetVideoOutput(h264.Encode(vis))
 
 	// Decoding pipeline (SIP -> LK)
 	// law := ulaw.Decode(c.lkRoomAudioIn)
-	h := c.audioCodec.DecodeRTP(c.lkRoomIn, c.audioType)
+	h := c.audioCodec.DecodeRTP(c.lkRoomAudioIn, c.audioType)
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
 	mux.Register(c.audioType, newRTPStatsHandler(c.mon, c.audioCodec.Info().SDPName, h))
@@ -363,7 +355,7 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	if err := answer.Unmarshal(c.sipInviteResp.Body()); err != nil {
 		return err
 	}
-	res, err := sdpGetAudioCodec(answer)
+	res, err := sdpGetCodecAndType(answer)
 	if err != nil {
 		c.mon.CallEnd()
 		logger.Errorw("SIP SDP failed", err)
@@ -380,13 +372,14 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 
 	c.audioCodec = res.Audio
 	c.audioType = res.AudioType
+	c.videoType = res.VideoType
 	c.dtmfType = res.DTMFType
 	if dst := sdpGetAudioDest(answer); dst != nil {
-		c.rtpConn.SetDestAddr(dst)
+		c.audioRtpConn.SetDestAddr(dst)
 	}
 
 	// TODO: this says "audio", but will actually count DTMF too
-	c.rtpOut = rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", c.rtpConn))
+	c.rtpOut = rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", c.audioRtpConn))
 	c.rtpAudio = c.rtpOut.NewStream(c.audioType)
 	c.rtpDTMF = c.rtpOut.NewStream(c.dtmfType)
 

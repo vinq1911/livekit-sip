@@ -115,13 +115,13 @@ func sdpMediaOffer(audioListenerPort int, videoListenerPort int) []*sdp.MediaDes
 				Media:   "video",
 				Port:    sdp.RangedPort{Value: videoListenerPort},
 				Protos:  []string{"RTP", "AVP"},
-				Formats: []string{"102","97","125"},
+				Formats: []string{"102", "97", "125"},
 			},
 			Attributes: []sdp.Attribute{
 				{Key: "rtpmap", Value: "102 H264/90000"},
-                                {Key: "fmtp", Value: "102 profile-level-id=42001f"},
+				{Key: "fmtp", Value: "102 profile-level-id=42001f"},
 				{Key: "rtpmap", Value: "97 H264/90000"},
-                                {Key: "fmtp", Value: "97 profile-level-id=42801F"},
+				{Key: "fmtp", Value: "97 profile-level-id=42801F"},
 				/*{Key: "rtpmap", Value: "104 H264/90000"},
 				{Key: "fmtp", Value: "104 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f"},
 				{Key: "rtpmap", Value: "106 H264/90000"},
@@ -135,7 +135,7 @@ func sdpMediaOffer(audioListenerPort int, videoListenerPort int) []*sdp.MediaDes
 				/*{Key: "rtpmap", Value: "127 H264/90000"},
 				{Key: "fmtp", Value: "127 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d001f"},*/
 			},
-		}
+		},
 	}
 }
 
@@ -172,13 +172,13 @@ func sdpAnswerMediaDesc(audioListenerPort int, videoListenerPort int, res *sdpCo
 				Media:   "video",
 				Port:    sdp.RangedPort{Value: videoListenerPort},
 				Protos:  []string{"RTP", "AVP"},
-				Formats: []string{"102","97","125"},
+				Formats: []string{"102", "97", "125"},
 			},
 			Attributes: []sdp.Attribute{
 				{Key: "rtpmap", Value: "102 H264/90000"},
-                                {Key: "fmtp", Value: "102 profile-level-id=42001f"},
+				{Key: "fmtp", Value: "102 profile-level-id=42001f"},
 				{Key: "rtpmap", Value: "97 H264/90000"},
-                                {Key: "fmtp", Value: "97 profile-level-id=42801F"},
+				{Key: "fmtp", Value: "97 profile-level-id=42801F"},
 				/*{Key: "rtpmap", Value: "104 H264/90000"},
 				{Key: "fmtp", Value: "104 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f"},
 				{Key: "rtpmap", Value: "106 H264/90000"},
@@ -263,28 +263,38 @@ func sdpGenerateAnswer(offer sdp.SessionDescription, publicIp string, audioListe
 	return answer.Marshal()
 }
 
-func sdpGetAudio(offer sdp.SessionDescription) *sdp.MediaDescription {
+func sdpGetAudioVideo(offer sdp.SessionDescription) (*sdp.MediaDescription, *sdp.MediaDescription) {
+	var audio, video *sdp.MediaDescription
+
 	for _, m := range offer.MediaDescriptions {
 		if m.MediaName.Media == "audio" {
-			return m
+			audio = m
+		}
+		if m.MediaName.Media == "video" {
+			video = m
 		}
 	}
-	return nil
+	return audio, video
 }
 
 func sdpGetAudioDest(offer sdp.SessionDescription) *net.UDPAddr {
 	ci := offer.ConnectionInformation
+
 	if ci.NetworkType != "IN" {
 		return nil
 	}
+
 	ip, err := netip.ParseAddr(ci.Address.Address)
 	if err != nil {
 		return nil
 	}
-	audio := sdpGetAudio(offer)
+
+	audio, _ := sdpGetAudioVideo(offer)
+
 	if audio == nil {
 		return nil
 	}
+
 	return &net.UDPAddr{
 		IP:   ip.AsSlice(),
 		Port: audio.MediaName.Port.Value,
@@ -292,17 +302,41 @@ func sdpGetAudioDest(offer sdp.SessionDescription) *net.UDPAddr {
 }
 
 type sdpCodecResult struct {
+	VideoType byte
 	Audio     rtp.AudioCodec
 	AudioType byte
 	DTMFType  byte
 }
 
-func sdpGetAudioCodec(offer sdp.SessionDescription) (*sdpCodecResult, error) {
-	audio := sdpGetAudio(offer)
+func sdpGetCodecAndType(offer sdp.SessionDescription) (*sdpCodecResult, error) {
+	audio, video := sdpGetAudioVideo(offer)
 	if audio == nil {
 		return nil, errors.New("no audio in sdp")
 	}
-	return sdpGetCodec(audio.Attributes)
+	audioAttrs, err := sdpGetCodec(audio.Attributes)
+	audioAttrs.VideoType = sdpGetVideoType(video.Attributes)
+
+	return audioAttrs, err
+}
+
+func sdpGetVideoType(attrs []sdp.Attribute) byte {
+	for _, m := range attrs {
+		if m.Key == "rtpmap" {
+			sub := strings.SplitN(m.Value, " ", 2)
+			if len(sub) != 2 {
+				continue
+			}
+			typ, err := strconv.Atoi(sub[0])
+			if err != nil {
+				continue
+			}
+			name := sub[1]
+			if name == "H264/90000" {
+				return byte(typ)
+			}
+		}
+	}
+	return 0
 }
 
 func sdpGetCodec(attrs []sdp.Attribute) (*sdpCodecResult, error) {

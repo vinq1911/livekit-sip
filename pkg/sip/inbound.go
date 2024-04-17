@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/vinq1911/livekit-sip/pkg/media/h264"
+	"github.com/vinq1911/livekit-sip/pkg/media/ulaw"
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
@@ -208,12 +209,15 @@ type inboundCall struct {
 	from          *sip.FromHeader
 	to            *sip.ToHeader
 	src           string
-	rtpConn       *rtp.Conn
+	audioRtpConn  *rtp.Conn
+	videoRtpConn  *rtp.Conn
 	audioCodec    rtp.AudioCodec
 	audioHandler  atomic.Pointer[rtp.Handler]
+	videoHandler  atomic.Pointer[rtp.Handler]
 	audioReceived atomic.Bool
 	audioRecvChan chan struct{}
 	audioType     byte
+	videoType     byte
 	dtmf          chan dtmf.Event // buffered
 	lkRoom        *Room           // LiveKit room; only active after correct pin is entered
 	callDur       func() time.Duration
@@ -376,59 +380,67 @@ func (c *inboundCall) sendBye() {
 }
 
 func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
-	audioConn := NewMediaConn()
-	audioConn.OnRTP(c)
-	if err := audioConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
-		return nil, err
-	}
-	c.audioRtpConn = audioConn
 
-	videoConn := NewMediaConn()
+	audioConn := rtp.NewConn(func() {
+		c.close("media-timeout")
+	})
+
+	videoConn := rtp.NewConn(func() {
+		c.close("media-timeout")
+	})
+
 	videoConn.OnRTP(c)
-	if err := videoConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	if err := videoConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return nil, err
 	}
+
 	c.videoRtpConn = videoConn
 
 	offer := sdp.SessionDescription{}
 	if err := offer.Unmarshal(offerData); err != nil {
 		return nil, err
 	}
-	res, err := sdpGetAudioCodec(offer)
+	res, err := sdpGetCodecAndType(offer)
 	if err != nil {
 		return nil, err
 	}
 
-	conn := rtp.NewConn(func() {
-		c.close("media-timeout")
-	})
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
-	mux.Register(res.AudioType, newRTPStatsHandler(c.mon, res.Audio.Info().SDPName, rtp.HandlerFunc(c.handleAudio)))
+	mux.Register(res.AudioType, newRTPStatsHandler(c.mon, res.Audio.Info().SDPName, rtp.HandlerFunc(c.HandleRTP)))
 	if res.DTMFType != 0 {
 		mux.Register(res.DTMFType, newRTPStatsHandler(c.mon, dtmf.SDPName, rtp.HandlerFunc(c.handleDTMF)))
 	}
-	conn.OnRTP(mux)
+	audioConn.OnRTP(mux)
 	if dst := sdpGetAudioDest(offer); dst != nil {
-		conn.SetDestAddr(dst)
+		audioConn.SetDestAddr(dst)
 	}
-	if err := conn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	if err := audioConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return nil, err
 	}
-	logger.Debugw("begin listening on UDP", "port", conn.LocalAddr().Port)
-	c.rtpConn = conn
+	logger.Debugw("begin listening on UDP", "audio port", audioConn.LocalAddr().Port, "video port", videoConn.LocalAddr().Port)
+
+	c.audioRtpConn = audioConn
 	c.audioCodec = res.Audio
 	c.audioType = res.AudioType
 
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
-	aus := rtp.NewMediaStreamOut[ulaw.Sample](audioConn, rtpPacketDur)
+
+	asw := rtp.NewSeqWriter(c.videoRtpConn)
+	ast := asw.NewStream(c.audioType)
+
+	aus := rtp.NewMediaStreamOut[ulaw.Sample](ast)
 	c.lkRoom.SetAudioOutput(ulaw.Encode(aus))
 
-	vis := rtp.NewMediaStreamOut[h264.Sample](videoConn, rtpPacketDur)
+	vsw := rtp.NewSeqWriter(c.videoRtpConn)
+	vst := vsw.NewStream(c.videoType)
+
+	vis := rtp.NewMediaStreamOut[h264.Sample](vst)
+
 	c.lkRoom.SetVideoOutput(h264.Encode(vis))
 
-	return sdpGenerateAnswer(offer, c.s.signalingIp, audioConn.LocalAddr().Port, videoConn.LocalAddr().Port)
+	return sdpGenerateAnswer(offer, c.s.signalingIp, audioConn.LocalAddr().Port, videoConn.LocalAddr().Port, res)
 }
 
 func (c *inboundCall) pinPrompt(ctx context.Context) {
@@ -522,7 +534,7 @@ func (c *inboundCall) closeMedia() {
 	}
 }
 
-func (c *inboundCall) handleAudio(p *rtp.Packet) error {
+func (c *inboundCall) HandleRTP(p *rtp.Packet) error {
 	if c.audioReceived.CompareAndSwap(false, true) {
 		close(c.audioRecvChan)
 	}
@@ -552,7 +564,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	if err != nil {
 		return err
 	}
-	audioTrack, videoTrack, err := c.lkRoom.NewParticipant()
+	audioTrack, videoTrack, err := c.lkRoom.NewParticipantTrack()
 	if err != nil {
 		_ = c.lkRoom.Close()
 		return err

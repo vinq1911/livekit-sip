@@ -29,7 +29,7 @@ import (
 
 func TestSDPMediaOffer(t *testing.T) {
 	const port = 12345
-	offer := sdpMediaOffer(port)
+	offer := sdpMediaOffer(port, port+1)
 	require.Equal(t, []*sdp.MediaDescription{
 		{
 			MediaName: sdp.MediaName{
@@ -53,7 +53,7 @@ func TestSDPMediaOffer(t *testing.T) {
 	media.CodecSetEnabled(g722.SDPName, false)
 	defer media.CodecSetEnabled(g722.SDPName, true)
 
-	offer = sdpMediaOffer(port)
+	offer = sdpMediaOffer(port, port+1)
 	require.Equal(t, []*sdp.MediaDescription{
 		{
 			MediaName: sdp.MediaName{
@@ -181,7 +181,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 			require.Equal(t, c.exp, got)
 		})
 	}
-	offer := sdpMediaOffer(port)
+	offer := sdpMediaOffer(port, port+1)
 	require.Equal(t, []*sdp.MediaDescription{
 		{
 			MediaName: sdp.MediaName{

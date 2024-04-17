@@ -189,7 +189,7 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Wri
 
 	p := r.room.LocalParticipant
 	if _, err = p.PublishTrack(audioTrack, &lksdk.TrackPublicationOptions{
-		Name: p.identity,
+		Name: r.identity,
 	}); err != nil {
 		return nil, nil, err
 	}
@@ -209,7 +209,7 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Wri
 		return nil, nil, err
 	}
 
-	vw := h264.BuildSampleWriter[h264.Sample](videoTrack, sampleDur)
+	vw := h264.BuildSampleWriter[h264.Sample](videoTrack, rtp.DefFrameDur)
 	return pw, vw, nil
 }
 
