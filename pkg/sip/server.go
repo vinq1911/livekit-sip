@@ -130,7 +130,18 @@ func sipErrorResponse(tx sip.ServerTransaction, req *sip.Request) {
 func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) error {
 	var err error
 	if s.conf.UseExternalIP {
-		if s.signalingIp, err = getPublicIP(); err != nil {
+		if s.signalingIp, err = func() (string, error) {
+			var ip string
+			var err error
+
+			if s.conf.UseStun && s.conf.StunURL != "" {
+				ip, err = getPublicIpFromStun(s.conf.StunURL)
+			} else {
+				ip, err = getPublicIPFromIpApi()
+			}
+
+			return ip, err
+		}(); err != nil {
 			return err
 		}
 		if s.signalingIpLocal, err = getLocalIP(s.conf.LocalNet); err != nil {
@@ -164,6 +175,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) e
 
 	s.sipSrv.OnInvite(s.onInvite)
 	s.sipSrv.OnBye(s.onBye)
+	s.sipSrv.OnOptions(s.onOptions)
 	s.sipUnhandled = unhandled
 
 	// Ignore ACKs

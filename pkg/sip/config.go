@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/logger"
+	"github.com/pion/stun"
 )
 
 var source *rand.Rand
@@ -32,7 +33,45 @@ func init() {
 	source = rand.New(rand.NewSource(time.Now().UnixNano()))
 }
 
-func getPublicIP() (string, error) {
+func getPublicIpFromStun(stunServerAddr string) (string, error) {
+
+	// Parse a STUN URI
+	u, err := stun.ParseURI(stunServerAddr)
+	if err != nil {
+		panic(err)
+	}
+
+	// Creating a "connection" to STUN server.
+	c, err := stun.DialURI(u, &stun.DialConfig{})
+	if err != nil {
+		panic(err)
+	}
+	// Building binding request with random transaction id.
+	message := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
+
+	var ip string
+	// Sending request to STUN server, waiting for response message.
+	if err := c.Do(message, func(res stun.Event) {
+		if res.Error != nil {
+			panic(res.Error)
+		}
+		// Decoding XOR-MAPPED-ADDRESS attribute from message.
+		var xorAddr stun.XORMappedAddress
+		if err := xorAddr.GetFrom(res.Message); err != nil {
+			panic(err)
+		}
+
+		ip = xorAddr.IP.String()
+		logger.Infow("STUN", "response", ip)
+
+	}); err != nil {
+		return "", err
+	}
+
+	return ip, nil
+}
+
+func getPublicIPFromIpApi() (string, error) {
 	req, err := http.Get("http://ip-api.com/json/")
 	if err != nil {
 		return "", err

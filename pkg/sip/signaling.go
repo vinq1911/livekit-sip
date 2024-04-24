@@ -24,8 +24,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/livekit/protocol/logger"
 	"github.com/pion/sdp/v2"
-
 	"github.com/vinq1911/livekit-sip/pkg/media"
 	"github.com/vinq1911/livekit-sip/pkg/media/dtmf"
 	"github.com/vinq1911/livekit-sip/pkg/media/rtp"
@@ -233,6 +233,7 @@ func sdpGenerateOffer(publicIp string, audioRtpListenerPort int, videoRtpListene
 
 func sdpGenerateAnswer(offer sdp.SessionDescription, publicIp string, audioListenerPort int, videoListenerPort int, res *sdpCodecResult) ([]byte, error) {
 
+	logger.Debugw("Generating SDP answer")
 	answer := sdp.SessionDescription{
 		Version: 0,
 		Origin: sdp.Origin{
@@ -259,7 +260,7 @@ func sdpGenerateAnswer(offer sdp.SessionDescription, publicIp string, audioListe
 		},
 		MediaDescriptions: sdpAnswerMediaDesc(audioListenerPort, videoListenerPort, res),
 	}
-
+	logger.Debugw("Formulated answer:", "answer", answer)
 	return answer.Marshal()
 }
 
@@ -274,6 +275,12 @@ func sdpGetAudioVideo(offer sdp.SessionDescription) (*sdp.MediaDescription, *sdp
 			video = m
 		}
 	}
+
+	/// hacky
+	if video == nil {
+		video = &sdp.MediaDescription{Attributes: []sdp.Attribute{}}
+	}
+
 	return audio, video
 }
 
@@ -302,6 +309,7 @@ func sdpGetAudioDest(offer sdp.SessionDescription) *net.UDPAddr {
 }
 
 type sdpCodecResult struct {
+	Video     rtp.VideoCodec
 	VideoType byte
 	Audio     rtp.AudioCodec
 	AudioType byte
@@ -310,47 +318,32 @@ type sdpCodecResult struct {
 
 func sdpGetCodecAndType(offer sdp.SessionDescription) (*sdpCodecResult, error) {
 
+	logger.Debugw("Getting audio and video from offer", "offer", offer)
+
 	audio, video := sdpGetAudioVideo(offer)
 	if audio == nil {
 		return nil, errors.New("no audio in sdp")
 	}
-	audioAttrs, err := sdpGetCodec(audio.Attributes)
 
-	if video != nil {
-		audioAttrs.VideoType = sdpGetVideoType(video.Attributes)
-	}
+	logger.Debugw("Getting codec from audio", "audio", audio)
+	attrs, err := sdpGetCodec(audio.Attributes, video.Attributes)
 
-	return audioAttrs, err
+	logger.Debugw("Returning codec and type", "attributes", attrs, "error", err)
+	return attrs, err
 }
 
-func sdpGetVideoType(attrs []sdp.Attribute) byte {
-	for _, m := range attrs {
-		if m.Key == "rtpmap" {
-			sub := strings.SplitN(m.Value, " ", 2)
-			if len(sub) != 2 {
-				continue
-			}
-			typ, err := strconv.Atoi(sub[0])
-			if err != nil {
-				continue
-			}
-			name := sub[1]
-			if name == "H264/90000" {
-				return byte(typ)
-			}
-		}
-	}
-	return 0
-}
+func sdpGetCodec(audioAttrs []sdp.Attribute, videoAttrs []sdp.Attribute) (*sdpCodecResult, error) {
 
-func sdpGetCodec(attrs []sdp.Attribute) (*sdpCodecResult, error) {
 	var (
 		priority   int
 		audioCodec rtp.AudioCodec
+		videoCodec rtp.VideoCodec
+		videoType  byte
 		audioType  byte
 		dtmfType   byte
 	)
-	for _, m := range attrs {
+
+	for _, m := range audioAttrs {
 		switch m.Key {
 		case "rtpmap":
 			sub := strings.SplitN(m.Value, " ", 2)
@@ -366,6 +359,7 @@ func sdpGetCodec(attrs []sdp.Attribute) (*sdpCodecResult, error) {
 				dtmfType = byte(typ)
 				continue
 			}
+			logger.Debugw("Testing audio codec", "name", name, "value", m.Value)
 			codec, ok := lksdp.CodecByName(name).(rtp.AudioCodec)
 			if !ok {
 				continue
@@ -377,10 +371,47 @@ func sdpGetCodec(attrs []sdp.Attribute) (*sdpCodecResult, error) {
 			}
 		}
 	}
-	if audioCodec == nil {
-		return nil, fmt.Errorf("common audio codec not found")
+
+	for _, m := range videoAttrs {
+		switch m.Key {
+		case "rtpmap":
+			sub := strings.SplitN(m.Value, " ", 2)
+			if len(sub) != 2 {
+				continue
+			}
+			typ, err := strconv.Atoi(sub[0])
+			if err != nil {
+				continue
+			}
+			name := sub[1]
+			codec, ok := lksdp.CodecByName(name).(rtp.VideoCodec)
+			if !ok {
+				continue
+			}
+			if videoCodec == nil || codec.Info().Priority > priority {
+				videoType = byte(typ)
+				videoCodec = codec
+				priority = codec.Info().Priority
+			}
+		}
 	}
+
+	if audioCodec == nil {
+		logger.Debugw("Audio codec NOT found")
+		return nil, errors.New("common audio codec not found")
+	} else {
+		logger.Debugw("Audio codec found", "codec", audioCodec.Info().SDPName, "type", string(audioType))
+	}
+
+	if videoCodec == nil {
+		logger.Debugw("Video codec NOT found")
+	} else {
+		logger.Debugw("Video codec found", "codec", videoCodec.Info().SDPName, "type", string(videoType))
+	}
+
 	return &sdpCodecResult{
+		Video:     videoCodec,
+		VideoType: videoType,
 		Audio:     audioCodec,
 		AudioType: audioType,
 		DTMFType:  dtmfType,

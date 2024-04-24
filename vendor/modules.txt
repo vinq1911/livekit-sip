@@ -303,6 +303,17 @@ github.com/pion/logging
 # github.com/pion/mdns v0.0.12
 ## explicit; go 1.19
 github.com/pion/mdns
+# github.com/pion/mediadevices v0.6.2
+## explicit; go 1.19
+github.com/pion/mediadevices/pkg/codec
+github.com/pion/mediadevices/pkg/codec/openh264
+github.com/pion/mediadevices/pkg/frame
+github.com/pion/mediadevices/pkg/io
+github.com/pion/mediadevices/pkg/io/audio
+github.com/pion/mediadevices/pkg/io/video
+github.com/pion/mediadevices/pkg/prop
+github.com/pion/mediadevices/pkg/wave
+github.com/pion/mediadevices/pkg/wave/mixer
 # github.com/pion/randutil v0.1.0
 ## explicit; go 1.14
 github.com/pion/randutil
@@ -472,6 +483,10 @@ golang.org/x/crypto/salsa20/salsa
 golang.org/x/exp/constraints
 golang.org/x/exp/maps
 golang.org/x/exp/slices
+# golang.org/x/image v0.15.0
+## explicit; go 1.18
+golang.org/x/image/draw
+golang.org/x/image/math/f64
 # golang.org/x/mod v0.16.0
 ## explicit; go 1.18
 golang.org/x/mod/semver

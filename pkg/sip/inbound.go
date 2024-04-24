@@ -155,6 +155,8 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	logger.Infow("INVITE received", "tag", tag, "from", from, "to", to)
 
 	username, password, drop, err := s.handler.GetAuthCredentials(ctx, from.Address.User, to.Address.User, to.Address.Host, src)
+	logger.Debugw("Auth credentials caught", "username", username, "password", password, "drop", drop, "err", err)
+
 	if err != nil {
 		cmon.InviteErrorShort("no-rule")
 		logger.Warnw("Rejecting inbound, doesn't match any Trunks", err,
@@ -172,11 +174,16 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		// handleInviteAuth will generate the SIP Response as needed
 		return
 	}
+	logger.Debugw("Call is good to go", "username", username, "password", password)
 	cmon.InviteAccept()
 
 	call := s.newInboundCall(cmon, tag, from, to, src)
 	call.joinDur = joinDur
 	call.handleInvite(call.ctx, req, tx, s.conf)
+}
+
+func (s *Server) onOptions(req *sip.Request, tx sip.ServerTransaction) {
+	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 }
 
 func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
@@ -213,6 +220,7 @@ type inboundCall struct {
 	videoRtpConn  *rtp.Conn
 	audioCodec    rtp.AudioCodec
 	audioHandler  atomic.Pointer[rtp.Handler]
+	videoCodec    rtp.VideoCodec
 	videoHandler  atomic.Pointer[rtp.Handler]
 	audioReceived atomic.Bool
 	audioRecvChan chan struct{}
@@ -259,6 +267,8 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 		Pin:        "",
 		NoPin:      false,
 	})
+
+	logger.Debugw("Deciding what to do with the call", "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src, "result", disp.Result)
 	switch disp.Result {
 	default:
 		logger.Errorw("Rejecting inbound call", fmt.Errorf("unexpected dispatch result: %v", disp.Result), "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
@@ -282,6 +292,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
 	answerData, err := c.runMediaConn(req.Body(), conf)
 	if err != nil {
+		logger.Debugw("Media response had error", "error", err)
 		sipErrorResponse(tx, req)
 		c.close("media-failed")
 		return
@@ -382,11 +393,13 @@ func (c *inboundCall) sendBye() {
 func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
 
 	audioConn := rtp.NewConn(func() {
-		c.close("media-timeout")
+		c.close("audio-timeout")
 	})
 
 	videoConn := rtp.NewConn(func() {
-		c.close("media-timeout")
+		logger.Debugw("Video timeout", "tag", c.tag)
+		/// we dont want this, since not everyone have video
+		/// c.close("video-timeout")
 	})
 
 	videoConn.OnRTP(c)
@@ -397,10 +410,14 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	c.videoRtpConn = videoConn
 
 	offer := sdp.SessionDescription{}
+	logger.Debugw("Offer received", "offer", string(offerData))
+
 	if err := offer.Unmarshal(offerData); err != nil {
+		logger.Debugw("Offer unmarshal error", err, "offer", offer)
 		return nil, err
 	}
 	res, err := sdpGetCodecAndType(offer)
+	logger.Debugw("SDP codec and type", "codec", res.Audio.Info().SDPName, "type", string(res.AudioType))
 	if err != nil {
 		return nil, err
 	}
@@ -427,18 +444,20 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
 
-	asw := rtp.NewSeqWriter(c.videoRtpConn)
+	asw := rtp.NewSeqWriter(c.audioRtpConn)
 	ast := asw.NewStream(c.audioType)
 
 	aus := rtp.NewMediaStreamOut[ulaw.Sample](ast)
 	c.lkRoom.SetAudioOutput(ulaw.Encode(aus))
 
 	vsw := rtp.NewSeqWriter(c.videoRtpConn)
-	vst := vsw.NewStream(c.videoType)
 
-	vis := rtp.NewMediaStreamOut[h264.Sample](vst)
-
-	c.lkRoom.SetVideoOutput(h264.Encode(vis))
+	if c.videoType != 0 {
+		logger.Debugw("Creating video stream", "videoType", string(c.videoType))
+		vst := vsw.NewStream(c.videoType)
+		vis := rtp.NewMediaStreamOut[h264.Sample](vst)
+		c.lkRoom.SetVideoOutput(h264.Encode(vis))
+	}
 
 	return sdpGenerateAnswer(offer, c.s.signalingIp, audioConn.LocalAddr().Port, videoConn.LocalAddr().Port, res)
 }
@@ -570,14 +589,15 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 		return err
 	}
 
-	// Decoding pipeline (SIP -> LK) audio
-	law := ulaw.Decode(audioTrack)
-	//构造NewMediaStreamIn  通过readLoop方法传入rtp byte数据，通过law decode为int16数据传给local  (pw)
-	var h rtp.Handler = rtp.NewMediaStreamIn(law)
+	logger.Debugw("Registering Audio Handler")
+	var h rtp.Handler = c.audioCodec.DecodeRTP(audioTrack, c.audioType)
 	c.audioHandler.Store(&h)
 
-	var vh rtp.Handler = rtp.NewMediaStreamIn(videoTrack)
-	c.videoHandler.Store(&vh)
+	if c.videoType != byte(0) {
+		logger.Debugw("Registering Video Handler")
+		var vh rtp.Handler = c.videoCodec.DecodeRTP(videoTrack, c.videoType)
+		c.videoHandler.Store(&vh)
+	}
 
 	return nil
 }
@@ -587,7 +607,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, wsUrl, t
 		c.joinDur()
 	}
 	c.callDur = c.mon.CallDur()
-	logger.Infow("Bridging SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "roomName", roomName, "identity", identity)
+	logger.Infow("Bridging SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "roomName", roomName, "identity", identity, "wsUrl", wsUrl, "token", token)
 	if err := c.createLiveKitParticipant(ctx, roomName, identity, wsUrl, token); err != nil {
 		logger.Errorw("Cannot create LiveKit participant", err, "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "roomName", roomName, "identity", identity, "wsUrl", wsUrl, "token", token)
 		c.close("participant-failed")

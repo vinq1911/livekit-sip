@@ -44,6 +44,7 @@ func (fnc HandlerFunc) HandleRTP(p *rtp.Packet) error {
 func HandleLoop(r Reader, h Handler) error {
 	for {
 		p, _, err := r.ReadRTP()
+
 		if err != nil {
 			return err
 		}
@@ -162,5 +163,6 @@ type MediaStreamIn[T ~[]byte] struct {
 }
 
 func (s *MediaStreamIn[T]) HandleRTP(p *rtp.Packet) error {
+
 	return s.w.WriteSample(T(p.Payload))
 }

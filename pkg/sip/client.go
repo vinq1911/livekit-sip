@@ -55,7 +55,21 @@ func NewClient(conf *config.Config, mon *stats.Monitor) *Client {
 func (c *Client) Start(agent *sipgo.UserAgent) error {
 	var err error
 	if c.conf.UseExternalIP {
-		if c.signalingIp, err = getPublicIP(); err != nil {
+
+		if c.signalingIp, err = func() (string, error) {
+			var ip string
+			var err error
+
+			if c.conf.UseStun && c.conf.StunURL != "" {
+				logger.Infow("getting public ip from STUN", "server", c.conf.StunURL)
+				ip, err = getPublicIpFromStun(c.conf.StunURL)
+			} else {
+				logger.Infow("getting public ip from IP api")
+				ip, err = getPublicIPFromIpApi()
+			}
+
+			return ip, err
+		}(); err != nil {
 			return err
 		}
 		if c.signalingIpLocal, err = getLocalIP(c.conf.LocalNet); err != nil {

@@ -79,21 +79,28 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 	roomCallback := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackPublished: func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+
 				if publication.Kind() == lksdk.TrackKindAudio {
+					logger.Debugw("Participant Audio track published")
 					if err := publication.SetSubscribed(true); err != nil {
 						logger.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
 					}
 				}
 			},
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				logger.Debugw("Participant OnTrackSubscribed", "trackID", pub.SID(), "participant", rp.Identity())
 				mTrack := r.NewTrack()
 				defer mTrack.Close()
 
 				odec, err := opus.Decode(mTrack, rtp.DefSampleRate, channels)
 				if err != nil {
+					logger.Debugw("Error in OPUS decode", "error", err)
 					return
 				}
+
+				logger.Debugw("Setting RTP NewMediaStreamIn")
 				h := rtp.NewMediaStreamIn[opus.Sample](odec)
+				logger.Debugw("Setting HandleLoop for remote track")
 				_ = rtp.HandleLoop(track, h)
 			},
 		},
@@ -103,6 +110,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 	}
 
 	if wsUrl == "" || token == "" {
+		logger.Debugw("Connecting to room without wsUrl and token")
 		room, err = lksdk.ConnectToRoom(conf.WsUrl,
 			lksdk.ConnectInfo{
 				APIKey:              conf.ApiKey,
@@ -112,16 +120,19 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 				ParticipantKind:     lksdk.ParticipantSIP,
 			}, roomCallback, lksdk.WithAutoSubscribe(false))
 	} else {
+		logger.Debugw("Connecting to room with wsUrl and token", "wsurl", wsUrl, "token", token)
 		room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback)
 	}
 
 	if err != nil {
+		logger.Debugw("Error in Room Connect", "error", err)
 		return err
 	}
 	r.room = room
 	r.p.ID = r.room.LocalParticipant.SID()
 	r.p.Identity = r.room.LocalParticipant.Identity()
 	r.ready.Store(true)
+	logger.Debugw("Room connection established", "room", room.Name(), "id", r.p.ID, "identity", r.p.Identity)
 	return nil
 }
 
@@ -189,13 +200,13 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Wri
 
 	p := r.room.LocalParticipant
 	if _, err = p.PublishTrack(audioTrack, &lksdk.TrackPublicationOptions{
-		Name: r.identity,
+		Name: r.identity + "-audio",
 	}); err != nil {
 		return nil, nil, err
 	}
 
-	if _, err = r.room.LocalParticipant.PublishTrack(videoTrack, &lksdk.TrackPublicationOptions{
-		Name:        r.identity + "-track",
+	if _, err = p.PublishTrack(videoTrack, &lksdk.TrackPublicationOptions{
+		Name:        r.identity + "-video",
 		VideoWidth:  1280,
 		VideoHeight: 720,
 	}); err != nil {
@@ -206,6 +217,7 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Wri
 	pw, err := opus.Encode(ow, rtp.DefSampleRate, channels)
 
 	if err != nil {
+		logger.Debugw("Error in OPUS encode", "error", err)
 		return nil, nil, err
 	}
 

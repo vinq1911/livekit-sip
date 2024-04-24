@@ -16,6 +16,7 @@ package rtp
 
 import (
 	"github.com/vinq1911/livekit-sip/pkg/media"
+	"github.com/vinq1911/livekit-sip/pkg/media/h264"
 )
 
 var (
@@ -41,12 +42,25 @@ type AudioCodec interface {
 	DecodeRTP(w media.PCM16Writer, typ byte) Handler
 }
 
+type VideoCodec interface {
+	media.Codec
+	EncodeRTP(w *Stream) h264.H264Writer
+	DecodeRTP(w h264.H264Writer, typ byte) Handler
+}
+
 var _ AudioEncoder[[]byte] = (*audioCodec[[]byte])(nil)
+var _ VideoEncoder[[]byte] = (*videoCodec[[]byte])(nil)
 
 type AudioEncoder[S ~[]byte] interface {
 	AudioCodec
 	Decode(writer media.PCM16Writer) media.Writer[S]
 	Encode(writer media.Writer[S]) media.PCM16Writer
+}
+
+type VideoEncoder[S ~[]byte] interface {
+	VideoCodec
+	Decode(writer h264.H264Writer) media.Writer[S]
+	Encode(writer media.Writer[S]) h264.H264Writer
 }
 
 func NewAudioCodec[S ~[]byte](
@@ -61,13 +75,35 @@ func NewAudioCodec[S ~[]byte](
 	}
 }
 
+func NewVideoCodec[S ~[]byte](
+	info media.CodecInfo,
+	decode func(writer h264.H264Writer) media.Writer[S],
+	encode func(writer media.Writer[S]) h264.H264Writer,
+) VideoCodec {
+	return &videoCodec[S]{
+		info:   info,
+		encode: encode,
+		decode: decode,
+	}
+}
+
 type audioCodec[S ~[]byte] struct {
 	info   media.CodecInfo
 	decode func(writer media.PCM16Writer) media.Writer[S]
 	encode func(writer media.Writer[S]) media.PCM16Writer
 }
 
+type videoCodec[S ~[]byte] struct {
+	info   media.CodecInfo
+	decode func(writer h264.H264Writer) media.Writer[S]
+	encode func(writer media.Writer[S]) h264.H264Writer
+}
+
 func (c *audioCodec[S]) Info() media.CodecInfo {
+	return c.info
+}
+
+func (c *videoCodec[S]) Info() media.CodecInfo {
 	return c.info
 }
 
@@ -75,7 +111,15 @@ func (c *audioCodec[S]) Decode(w media.PCM16Writer) media.Writer[S] {
 	return c.decode(w)
 }
 
+func (c *videoCodec[S]) Decode(w h264.H264Writer) media.Writer[S] {
+	return c.decode(w)
+}
+
 func (c *audioCodec[S]) Encode(w media.Writer[S]) media.PCM16Writer {
+	return c.encode(w)
+}
+
+func (c *videoCodec[S]) Encode(w media.Writer[S]) h264.H264Writer {
 	return c.encode(w)
 }
 
@@ -84,5 +128,13 @@ func (c *audioCodec[S]) EncodeRTP(w *Stream) media.PCM16Writer {
 }
 
 func (c *audioCodec[S]) DecodeRTP(w media.PCM16Writer, typ byte) Handler {
+	return NewMediaStreamIn(c.decode(w))
+}
+
+func (c *videoCodec[S]) EncodeRTP(w *Stream) h264.H264Writer {
+	return c.encode(NewMediaStreamOut[S](w))
+}
+
+func (c *videoCodec[S]) DecodeRTP(w h264.H264Writer, typ byte) Handler {
 	return NewMediaStreamIn(c.decode(w))
 }

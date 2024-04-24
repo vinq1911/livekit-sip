@@ -356,6 +356,7 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 		return err
 	}
 	res, err := sdpGetCodecAndType(answer)
+
 	if err != nil {
 		c.mon.CallEnd()
 		logger.Errorw("SIP SDP failed", err)

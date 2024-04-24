@@ -85,6 +85,8 @@ func (s *Service) Start() error {
 	if err := s.mon.Start(s.conf); err != nil {
 		return err
 	}
+
+	logger.Infow("Codecs enabled", "codecs", s.conf.Codecs)
 	// The UA must be shared between the client and the server.
 	// Otherwise, the client will have to listen on a random port, which must then be forwarded.
 	//
