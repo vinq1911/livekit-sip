@@ -1,0 +1,9 @@
+{
+    "rule": {
+		"dispatchRuleDirect": {
+			"roomName":"x8tq-ajow"
+		}
+	},
+    "trunk_ids": [],
+    "hide_phone_number": false
+}

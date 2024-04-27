@@ -71,7 +71,7 @@ type outboundCall struct {
 	mediaRunning  bool
 	lkRoom        *Room
 	lkRoomAudioIn media.Writer[media.PCM16Sample]
-	lkRoomVideoIn media.Writer[h264.Sample]
+	lkRoomVideoIn media.Writer[media.H264Sample]
 	sipCur        sipOutboundConfig
 	sipInviteReq  *sip.Request
 	sipInviteResp *sip.Response
@@ -275,7 +275,7 @@ func (c *outboundCall) relinkMedia() {
 	sw := rtp.NewSeqWriter(c.videoRtpConn)
 	st := sw.NewStream(c.videoType)
 
-	vis := rtp.NewMediaStreamOut[h264.Sample](st)
+	vis := rtp.NewMediaStreamOut[media.H264Sample](st)
 	c.lkRoom.SetVideoOutput(h264.Encode(vis))
 
 	// Decoding pipeline (SIP -> LK)

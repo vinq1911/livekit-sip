@@ -20,6 +20,9 @@ github.com/Nvveen/Gotty
 github.com/at-wat/ebml-go
 github.com/at-wat/ebml-go/mkvcore
 github.com/at-wat/ebml-go/webm
+# github.com/benbjohnson/clock v1.3.5
+## explicit; go 1.15
+github.com/benbjohnson/clock
 # github.com/beorn7/perks v1.0.1
 ## explicit; go 1.11
 github.com/beorn7/perks/quantile
@@ -122,9 +125,6 @@ github.com/gobwas/ws/wsutil
 # github.com/gogo/protobuf v1.3.2
 ## explicit; go 1.15
 github.com/gogo/protobuf/proto
-# github.com/golang/protobuf v1.5.4
-## explicit; go 1.17
-github.com/golang/protobuf/proto
 # github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 ## explicit; go 1.13
 github.com/google/shlex
@@ -164,8 +164,8 @@ github.com/livekit/mediatransportutil/pkg/nack
 github.com/livekit/mediatransportutil/pkg/pacer
 github.com/livekit/mediatransportutil/pkg/rtcconfig
 github.com/livekit/mediatransportutil/pkg/transport
-# github.com/livekit/protocol v1.12.1-0.20240331203140-766ababa37ae
-## explicit; go 1.21
+# github.com/livekit/protocol v1.14.0
+## explicit; go 1.22
 github.com/livekit/protocol/auth
 github.com/livekit/protocol/livekit
 github.com/livekit/protocol/logger
@@ -193,10 +193,11 @@ github.com/livekit/psrpc/pkg/rand
 github.com/livekit/psrpc/pkg/server
 github.com/livekit/psrpc/protoc-gen-psrpc/options
 github.com/livekit/psrpc/version
-# github.com/livekit/server-sdk-go/v2 v2.1.0
-## explicit; go 1.21
+# github.com/livekit/server-sdk-go/v2 v2.1.2
+## explicit; go 1.22
 github.com/livekit/server-sdk-go/v2
 github.com/livekit/server-sdk-go/v2/pkg/interceptor
+github.com/livekit/server-sdk-go/v2/pkg/samplebuilder
 # github.com/magefile/mage v1.15.0
 ## explicit; go 1.12
 github.com/magefile/mage/mg
@@ -283,13 +284,13 @@ github.com/pion/dtls/v2/pkg/protocol/alert
 github.com/pion/dtls/v2/pkg/protocol/extension
 github.com/pion/dtls/v2/pkg/protocol/handshake
 github.com/pion/dtls/v2/pkg/protocol/recordlayer
-# github.com/pion/ice/v2 v2.3.13
+# github.com/pion/ice/v2 v2.3.15
 ## explicit; go 1.13
 github.com/pion/ice/v2
 github.com/pion/ice/v2/internal/atomic
 github.com/pion/ice/v2/internal/fakenet
 github.com/pion/ice/v2/internal/stun
-# github.com/pion/interceptor v0.1.25
+# github.com/pion/interceptor v0.1.27
 ## explicit; go 1.15
 github.com/pion/interceptor
 github.com/pion/interceptor/internal/ntp
@@ -303,35 +304,24 @@ github.com/pion/logging
 # github.com/pion/mdns v0.0.12
 ## explicit; go 1.19
 github.com/pion/mdns
-# github.com/pion/mediadevices v0.6.2
-## explicit; go 1.19
-github.com/pion/mediadevices/pkg/codec
-github.com/pion/mediadevices/pkg/codec/openh264
-github.com/pion/mediadevices/pkg/frame
-github.com/pion/mediadevices/pkg/io
-github.com/pion/mediadevices/pkg/io/audio
-github.com/pion/mediadevices/pkg/io/video
-github.com/pion/mediadevices/pkg/prop
-github.com/pion/mediadevices/pkg/wave
-github.com/pion/mediadevices/pkg/wave/mixer
 # github.com/pion/randutil v0.1.0
 ## explicit; go 1.14
 github.com/pion/randutil
 # github.com/pion/rtcp v1.2.14
 ## explicit; go 1.13
 github.com/pion/rtcp
-# github.com/pion/rtp v1.8.4
+# github.com/pion/rtp v1.8.5
 ## explicit; go 1.19
 github.com/pion/rtp
 github.com/pion/rtp/codecs
 github.com/pion/rtp/codecs/av1/obu
-# github.com/pion/sctp v1.8.12
-## explicit; go 1.13
+# github.com/pion/sctp v1.8.16
+## explicit; go 1.19
 github.com/pion/sctp
-# github.com/pion/sdp/v2 v2.4.0
+# github.com/pion/sdp/v2 v2.4.0 => ./sdp
 ## explicit; go 1.12
 github.com/pion/sdp/v2
-# github.com/pion/sdp/v3 v3.0.8
+# github.com/pion/sdp/v3 v3.0.9
 ## explicit; go 1.13
 github.com/pion/sdp/v3
 # github.com/pion/srtp/v2 v2.0.18
@@ -360,14 +350,15 @@ github.com/pion/turn/v2/internal/client
 github.com/pion/turn/v2/internal/ipnet
 github.com/pion/turn/v2/internal/proto
 github.com/pion/turn/v2/internal/server
-# github.com/pion/webrtc/v3 v3.2.29
-## explicit; go 1.13
+# github.com/pion/webrtc/v3 v3.2.38
+## explicit; go 1.17
 github.com/pion/webrtc/v3
 github.com/pion/webrtc/v3/internal/fmtp
 github.com/pion/webrtc/v3/internal/mux
 github.com/pion/webrtc/v3/internal/util
 github.com/pion/webrtc/v3/pkg/media
 github.com/pion/webrtc/v3/pkg/media/h264reader
+github.com/pion/webrtc/v3/pkg/media/h264writer
 github.com/pion/webrtc/v3/pkg/media/ivfreader
 github.com/pion/webrtc/v3/pkg/media/oggreader
 github.com/pion/webrtc/v3/pkg/rtcerr
@@ -464,7 +455,7 @@ go.uber.org/zap/zapcore
 # go.uber.org/zap/exp v0.2.0
 ## explicit; go 1.19
 go.uber.org/zap/exp/zapslog
-# golang.org/x/crypto v0.21.0
+# golang.org/x/crypto v0.22.0
 ## explicit; go 1.18
 golang.org/x/crypto/blake2b
 golang.org/x/crypto/cryptobyte
@@ -478,19 +469,15 @@ golang.org/x/crypto/nacl/box
 golang.org/x/crypto/nacl/secretbox
 golang.org/x/crypto/pbkdf2
 golang.org/x/crypto/salsa20/salsa
-# golang.org/x/exp v0.0.0-20240318143956-a85f2c67cd81
+# golang.org/x/exp v0.0.0-20240325151524-a685a6edb6d8
 ## explicit; go 1.20
 golang.org/x/exp/constraints
 golang.org/x/exp/maps
 golang.org/x/exp/slices
-# golang.org/x/image v0.15.0
-## explicit; go 1.18
-golang.org/x/image/draw
-golang.org/x/image/math/f64
 # golang.org/x/mod v0.16.0
 ## explicit; go 1.18
 golang.org/x/mod/semver
-# golang.org/x/net v0.22.0
+# golang.org/x/net v0.24.0
 ## explicit; go 1.18
 golang.org/x/net/bpf
 golang.org/x/net/dns/dnsmessage
@@ -506,10 +493,10 @@ golang.org/x/net/ipv4
 golang.org/x/net/ipv6
 golang.org/x/net/proxy
 golang.org/x/net/trace
-# golang.org/x/sync v0.6.0
+# golang.org/x/sync v0.7.0
 ## explicit; go 1.18
 golang.org/x/sync/errgroup
-# golang.org/x/sys v0.18.0
+# golang.org/x/sys v0.19.0
 ## explicit; go 1.18
 golang.org/x/sys/cpu
 golang.org/x/sys/unix
@@ -544,7 +531,7 @@ golang.org/x/tools/internal/versions
 # google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237
 ## explicit; go 1.19
 google.golang.org/genproto/googleapis/rpc/status
-# google.golang.org/grpc v1.62.1
+# google.golang.org/grpc v1.63.2
 ## explicit; go 1.19
 google.golang.org/grpc
 google.golang.org/grpc/attributes
@@ -625,13 +612,11 @@ google.golang.org/protobuf/internal/strs
 google.golang.org/protobuf/internal/version
 google.golang.org/protobuf/proto
 google.golang.org/protobuf/protoadapt
-google.golang.org/protobuf/reflect/protodesc
 google.golang.org/protobuf/reflect/protoreflect
 google.golang.org/protobuf/reflect/protoregistry
 google.golang.org/protobuf/runtime/protoiface
 google.golang.org/protobuf/runtime/protoimpl
 google.golang.org/protobuf/types/descriptorpb
-google.golang.org/protobuf/types/gofeaturespb
 google.golang.org/protobuf/types/known/anypb
 google.golang.org/protobuf/types/known/durationpb
 google.golang.org/protobuf/types/known/emptypb
@@ -645,4 +630,5 @@ gopkg.in/yaml.v2
 # gopkg.in/yaml.v3 v3.0.1
 ## explicit
 gopkg.in/yaml.v3
+# github.com/pion/sdp/v2 => ./sdp
 # github.com/emiago/sipgo => github.com/livekit/sipgo v0.13.2-0.20240319152110-0b1be6f289ef

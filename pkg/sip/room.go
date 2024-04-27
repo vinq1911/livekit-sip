@@ -18,14 +18,16 @@ import (
 	"context"
 	"sync/atomic"
 
+	"github.com/vinq1911/livekit-sip/pkg/internal/ringbuf"
 	"github.com/vinq1911/livekit-sip/pkg/media/h264"
 
 	"github.com/frostbyte73/core"
-	"github.com/pion/webrtc/v3"
-
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-
+	"github.com/livekit/server-sdk-go/v2/pkg/samplebuilder"
+	"github.com/pion/rtp/codecs"
+	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v3/pkg/media/h264writer"
 	"github.com/vinq1911/livekit-sip/pkg/config"
 	"github.com/vinq1911/livekit-sip/pkg/media"
 	"github.com/vinq1911/livekit-sip/pkg/media/opus"
@@ -43,7 +45,7 @@ type Room struct {
 	room     *lksdk.Room
 	mix      *mixer.Mixer
 	audioOut media.SwitchWriter[media.PCM16Sample]
-	videoOut media.SwitchWriter[h264.Sample]
+	videoOut media.SwitchWriter[media.H264Sample]
 	identity string
 	p        Participant
 	ready    atomic.Bool
@@ -86,22 +88,50 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 						logger.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
 					}
 				}
-			},
-			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				logger.Debugw("Participant OnTrackSubscribed", "trackID", pub.SID(), "participant", rp.Identity())
-				mTrack := r.NewTrack()
-				defer mTrack.Close()
 
-				odec, err := opus.Decode(mTrack, rtp.DefSampleRate, channels)
-				if err != nil {
-					logger.Debugw("Error in OPUS decode", "error", err)
-					return
+				if publication.Kind() == lksdk.TrackKindVideo {
+					logger.Debugw("Participant Video track published", "trackID", publication.SID(), "participant", rp.Identity(), "mimetype", publication.MimeType())
+					if err := publication.SetSubscribed(true); err != nil {
+						logger.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
+					}
 				}
 
-				logger.Debugw("Setting RTP NewMediaStreamIn")
-				h := rtp.NewMediaStreamIn[opus.Sample](odec)
-				logger.Debugw("Setting HandleLoop for remote track")
-				_ = rtp.HandleLoop(track, h)
+			},
+			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				logger.Debugw("Participant OnTrackSubscribed", "trackID", pub.SID(), "participant", rp.Identity(), "kind", pub.Kind().String(), "mimetype", pub.MimeType())
+
+				mTrack := r.NewTrack()
+
+				defer mTrack.Close()
+
+				if track.Kind() == webrtc.RTPCodecTypeAudio {
+
+					odec, err := opus.Decode(mTrack, rtp.DefSampleRate, channels)
+					if err != nil {
+						logger.Debugw("Error in OPUS decode", "error", err)
+						return
+					}
+
+					logger.Debugw("Setting RTP NewMediaStreamIn")
+					h := rtp.NewMediaStreamIn[opus.Sample](odec)
+					logger.Debugw("Setting HandleLoop for remote track")
+					_ = rtp.HandleLoop(track, h)
+				}
+
+				if track.Kind() == webrtc.RTPCodecTypeVideo {
+
+					sb := samplebuilder.New(1000, &codecs.H264Packet{}, track.Codec().ClockRate, samplebuilder.WithPacketDroppedHandler(func() {
+						rp.WritePLI(track.SSRC())
+					}))
+
+					buffer := ringbuf.New[byte](1000)
+					w := h264writer.NewWith(buffer)
+
+					logger.Debugw("Running video track loop")
+					go VideoTrackLoop(sb, w, track)
+
+				}
+
 			},
 		},
 		OnDisconnected: func() {
@@ -149,7 +179,7 @@ func (r *Room) AudioOutput() media.Writer[media.PCM16Sample] {
 	return r.audioOut.Get()
 }
 
-func (r *Room) VideoOutput() media.Writer[h264.Sample] {
+func (r *Room) VideoOutput() media.Writer[media.H264Sample] {
 	return r.videoOut.Get()
 }
 
@@ -160,11 +190,28 @@ func (r *Room) SetAudioOutput(out media.Writer[media.PCM16Sample]) {
 	r.audioOut.Set(out)
 }
 
-func (r *Room) SetVideoOutput(out media.Writer[h264.Sample]) {
+func (r *Room) SetVideoOutput(out media.Writer[media.H264Sample]) {
 	if r == nil {
 		return
 	}
 	r.videoOut.Set(out)
+}
+
+func VideoTrackLoop(sb *samplebuilder.SampleBuilder, mw *h264writer.H264Writer, track *webrtc.TrackRemote) {
+	defer mw.Close()
+
+	for {
+		pkt, _, err := track.ReadRTP()
+		if err != nil {
+			logger.Debugw("Error in RTP processing", "error", err)
+			break
+		}
+		sb.Push(pkt)
+
+		for _, p := range sb.PopPackets() {
+			mw.WriteRTP(p)
+		}
+	}
 }
 
 func (r *Room) Close() error {
@@ -187,7 +234,7 @@ func (r *Room) Participant() Participant {
 	return r.p
 }
 
-func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Writer[h264.Sample], error) {
+func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Writer[media.H264Sample], error) {
 	audioTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, r.identity+"-audio", r.identity+"-audio-pion")
 	if err != nil {
 		return nil, nil, err
@@ -221,7 +268,7 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Wri
 		return nil, nil, err
 	}
 
-	vw := h264.BuildSampleWriter[h264.Sample](videoTrack, rtp.DefFrameDur)
+	vw := h264.BuildSampleWriter[media.H264Sample](videoTrack, rtp.DefFrameDur)
 	return pw, vw, nil
 }
 

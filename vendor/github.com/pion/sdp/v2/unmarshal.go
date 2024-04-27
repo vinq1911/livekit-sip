@@ -18,48 +18,55 @@ import (
 // (namely s1, s2, s3, ...) for a parsing procedure that complies with the
 // specifications laid out by the rfc4566#section-5 as well as by JavaScript
 // Session Establishment Protocol draft. Links:
-// 		https://tools.ietf.org/html/rfc4566#section-5
-// 		https://tools.ietf.org/html/draft-ietf-rtcweb-jsep-24
+//
+//	https://tools.ietf.org/html/rfc4566#section-5
+//	https://tools.ietf.org/html/draft-ietf-rtcweb-jsep-24
 //
 // https://tools.ietf.org/html/rfc4566#section-5
 // Session description
-//    v=  (protocol version)
-//    o=  (originator and session identifier)
-//    s=  (session name)
-//    i=* (session information)
-//    u=* (URI of description)
-//    e=* (email address)
-//    p=* (phone number)
-//    c=* (connection information -- not required if included in
-//         all media)
-//    b=* (zero or more bandwidth information lines)
-//    One or more time descriptions ("t=" and "r=" lines; see below)
-//    z=* (time zone adjustments)
-//    k=* (encryption key)
-//    a=* (zero or more session attribute lines)
-//    Zero or more media descriptions
+//
+//	v=  (protocol version)
+//	o=  (originator and session identifier)
+//	s=  (session name)
+//	i=* (session information)
+//	u=* (URI of description)
+//	e=* (email address)
+//	p=* (phone number)
+//	c=* (connection information -- not required if included in
+//	     all media)
+//	b=* (zero or more bandwidth information lines)
+//	One or more time descriptions ("t=" and "r=" lines; see below)
+//	z=* (time zone adjustments)
+//	k=* (encryption key)
+//	a=* (zero or more session attribute lines)
+//	Zero or more media descriptions
 //
 // Time description
-//    t=  (time the session is active)
-//    r=* (zero or more repeat times)
+//
+//	t=  (time the session is active)
+//	r=* (zero or more repeat times)
 //
 // Media description, if present
-//    m=  (media name and transport address)
-//    i=* (media title)
-//    c=* (connection information -- optional if included at
-//         session level)
-//    b=* (zero or more bandwidth information lines)
-//    k=* (encryption key)
-//    a=* (zero or more media attribute lines)
+//
+//	m=  (media name and transport address)
+//	i=* (media title)
+//	c=* (connection information -- optional if included at
+//	     session level)
+//	b=* (zero or more bandwidth information lines)
+//	k=* (encryption key)
+//	a=* (zero or more media attribute lines)
 //
 // In order to generate the following state table and draw subsequent
 // deterministic finite-state automota ("DFA") the following regex was used to
 // derive the DFA:
-//    vosi?u?e?p?c?b*(tr*)+z?k?a*(mi?c?b*k?a*)*
+//
+//	vosi?u?e?p?c?b*(tr*)+z?k?a*(mi?c?b*k?a*)*
+//
 // possible place and state to exit:
-//                    **   * * *  ** * * * *
-//                    99   1 1 1  11 1 1 1 1
-//                         3 1 1  26 5 5 4 4
+//
+//	**   * * *  ** * * * *
+//	99   1 1 1  11 1 1 1 1
+//	     3 1 1  26 5 5 4 4
 //
 // Please pay close attention to the `k`, and `a` parsing states. In the table
 // below in order to distinguish between the states belonging to the media
@@ -625,7 +632,7 @@ func unmarshalSessionBandwidth(l *lexer) (stateFn, error) {
 
 	bandwidth, err := unmarshalBandwidth(value)
 	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `b=%v`", value)
+		return nil, err
 	}
 	l.desc.Bandwidth = append(l.desc.Bandwidth, *bandwidth)
 
@@ -644,7 +651,7 @@ func unmarshalBandwidth(value string) (*Bandwidth, error) {
 	} else {
 		// Set according to currently registered with IANA
 		// https://tools.ietf.org/html/rfc4566#section-5.8
-		if i := indexOf(parts[0], []string{"CT", "AS"}); i == -1 {
+		if i := indexOf(parts[0], []string{"CT", "AS", "TIAS"}); i == -1 {
 			return nil, fmt.Errorf("sdp: invalid value `%v`", parts[0])
 		}
 	}
@@ -827,7 +834,7 @@ func unmarshalMediaDescription(l *lexer) (stateFn, error) {
 	// Set according to currently registered with IANA
 	// https://tools.ietf.org/html/rfc4566#section-5.14
 	for _, proto := range strings.Split(fields[2], "/") {
-		if i := indexOf(proto, []string{"UDP", "RTP", "AVP", "SAVP", "SAVPF", "TLS", "DTLS", "SCTP", "AVPF"}); i == -1 {
+		if i := indexOf(proto, []string{"BFCP", "UDP", "RTP", "AVP", "SAVP", "SAVPF", "TLS", "DTLS", "SCTP", "AVPF"}); i == -1 {
 			return nil, fmt.Errorf("sdp: invalid value `%v`", fields[2])
 		}
 		newMediaDesc.MediaName.Protos = append(newMediaDesc.MediaName.Protos, proto)
@@ -878,7 +885,7 @@ func unmarshalMediaBandwidth(l *lexer) (stateFn, error) {
 	latestMediaDesc := l.desc.MediaDescriptions[len(l.desc.MediaDescriptions)-1]
 	bandwidth, err := unmarshalBandwidth(value)
 	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `b=%v`", value)
+		return nil, err
 	}
 	latestMediaDesc.Bandwidth = append(latestMediaDesc.Bandwidth, *bandwidth)
 	return s15, nil

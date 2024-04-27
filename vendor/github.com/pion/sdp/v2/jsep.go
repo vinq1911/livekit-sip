@@ -50,20 +50,12 @@ var extMapURI = map[int]string{
 
 // NewJSEPSessionDescription creates a new SessionDescription with
 // some settings that are required by the JSEP spec.
-//
-// Note: Since v2.4.0, session ID has been fixed to use crypto random according to
-//       JSEP spec, so that NewJSEPSessionDescription now returns error as a second
-//       return value.
-func NewJSEPSessionDescription(identity bool) (*SessionDescription, error) {
-	sid, err := newSessionID()
-	if err != nil {
-		return nil, err
-	}
+func NewJSEPSessionDescription(identity bool) *SessionDescription {
 	d := &SessionDescription{
 		Version: 0,
 		Origin: Origin{
 			Username:       "-",
-			SessionID:      sid,
+			SessionID:      newSessionID(),
 			SessionVersion: uint64(time.Now().Unix()),
 			NetworkType:    "IN",
 			AddressType:    "IP4",
@@ -88,7 +80,7 @@ func NewJSEPSessionDescription(identity bool) (*SessionDescription, error) {
 		d.WithPropertyAttribute(AttrKeyIdentity)
 	}
 
-	return d, nil
+	return d
 }
 
 // WithPropertyAttribute adds a property attribute 'a=key' to the session description

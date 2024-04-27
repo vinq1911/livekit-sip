@@ -406,7 +406,7 @@ func sdpGetCodec(audioAttrs []sdp.Attribute, videoAttrs []sdp.Attribute) (*sdpCo
 	if videoCodec == nil {
 		logger.Debugw("Video codec NOT found")
 	} else {
-		logger.Debugw("Video codec found", "codec", videoCodec.Info().SDPName, "type", string(videoType))
+		logger.Debugw("Video codec found", "codec", videoCodec.Info().SDPName, "type", videoType)
 	}
 
 	return &sdpCodecResult{

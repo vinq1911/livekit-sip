@@ -171,7 +171,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
-			got, err := sdpGetCodec(c.offer)
+			got, err := sdpGetCodec(c.offer, []sdp.Attribute{})
 			if c.exp == nil {
 				require.Error(t, err)
 				return

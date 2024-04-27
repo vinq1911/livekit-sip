@@ -1,14 +1,14 @@
-api_key: APIfdPdDzaf5N2B
-api_secret: s7fkuYnWBRSYki4WXwrDJiSvBNgafwZ3ffWpd47IKDRA
-ws_url: ws://localhost:7880
+api_key: APILkAiZe53zweh
+api_secret: mnSe1PhAWs4LFrSl4zJ5HvGiV0ZfCUxeDZf70cCAbqmC
+ws_url: ws://127.0.0.1:7880
 logging:
   level: debug
 redis:
   address: localhost:6379
-sip_port: 5062
+sip_port: 5060
 rtp_port: 10000-20000
 use_external_ip: false
 use_stun: true
-stun_url: 'stun:192.168.1.64:3478'
+stun_url: 'stun:127.0.0.1:3478'
 codecs:
-  G722/8000: true
+  G722/8000: false

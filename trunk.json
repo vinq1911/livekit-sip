@@ -1,0 +1,10 @@
+{
+    "inbound_addresses": [],
+    "outbound_address": "",
+    "outbound_number": "",
+    "inbound_numbers_regex": [],
+    "inbound_username": "",
+    "inbound_password": "",
+    "outbound_username": "",
+    "outbound_password": ""
+}

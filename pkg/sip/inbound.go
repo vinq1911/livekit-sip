@@ -440,6 +440,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	c.audioRtpConn = audioConn
 	c.audioCodec = res.Audio
 	c.audioType = res.AudioType
+	c.videoType = res.VideoType
 
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
@@ -455,7 +456,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	if c.videoType != 0 {
 		logger.Debugw("Creating video stream", "videoType", string(c.videoType))
 		vst := vsw.NewStream(c.videoType)
-		vis := rtp.NewMediaStreamOut[h264.Sample](vst)
+		vis := rtp.NewMediaStreamOut[media.H264Sample](vst)
 		c.lkRoom.SetVideoOutput(h264.Encode(vis))
 	}
 
@@ -594,7 +595,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	c.audioHandler.Store(&h)
 
 	if c.videoType != byte(0) {
-		logger.Debugw("Registering Video Handler")
+		logger.Debugw("Registering Video Handler", "videotype", c.videoType)
 		var vh rtp.Handler = c.videoCodec.DecodeRTP(videoTrack, c.videoType)
 		c.videoHandler.Store(&vh)
 	}
