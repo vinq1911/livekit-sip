@@ -27,7 +27,7 @@ const SDPName = "H264/90000"
 func init() {
 	m.RegisterCodec(rtp.NewVideoCodec(m.CodecInfo{
 		SDPName:     SDPName,
-		RTPDefType:  byte(126),
+		RTPDefType:  97,
 		RTPIsStatic: true,
 		Priority:    1,
 		Disabled:    false,
@@ -49,15 +49,15 @@ func (e *Encoder) WriteSample(in m.H264Sample) error {
 
 func (d *Decoder) WriteSample(in m.H264Sample) error {
 	// TODO: reuse buffer
-	out := in.Decode()
-	return d.w.WriteSample(out)
+
+	return d.w.WriteSample(in)
 }
 
-func Encode(w m.Writer[m.H264Sample]) m.Writer[m.H264Sample] {
+func Encode(w m.H264Writer) m.H264Writer {
 	return &Encoder{w: w}
 }
 
-func Decode(w m.H264Writer) m.Writer[m.H264Sample] {
+func Decode(w m.H264Writer) m.H264Writer {
 	return &Decoder{w: w}
 }
 
@@ -69,6 +69,7 @@ func BuildSampleWriter[T ~[]byte](w SampleWriter, sampleDur time.Duration) m.Wri
 	return m.WriterFunc[T](func(in T) error {
 		data := make([]byte, len(in))
 		copy(data, in)
+		/// zero data?
 		return w.WriteSample(media.Sample{Data: data})
 	})
 }

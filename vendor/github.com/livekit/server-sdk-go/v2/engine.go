@@ -205,10 +205,7 @@ func (e *RTCEngine) configure(
 	clientConfig *livekit.ClientConfiguration,
 	subscriberPrimary *bool) error {
 	rtcICEServers := FromProtoIceServers(iceServers)
-	configuration := webrtc.Configuration{
-		ICEServers:         rtcICEServers,
-		ICETransportPolicy: e.connParams.ICETransportPolicy,
-	}
+	configuration := webrtc.Configuration{ICEServers: rtcICEServers}
 	if clientConfig != nil &&
 		clientConfig.GetForceRelay() == livekit.ClientConfigSetting_ENABLED {
 		configuration.ICETransportPolicy = webrtc.ICETransportPolicyRelay
@@ -232,7 +229,6 @@ func (e *RTCEngine) configure(
 		Configuration:        configuration,
 		RetransmitBufferSize: e.connParams.RetransmitBufferSize,
 		Pacer:                e.connParams.Pacer,
-		Interceptors:         e.connParams.Interceptors,
 		OnRTTUpdate:          e.setRTT,
 		IsSender:             true,
 	}); err != nil {

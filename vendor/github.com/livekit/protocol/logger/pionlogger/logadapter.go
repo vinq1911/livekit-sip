@@ -16,6 +16,7 @@ package pionlogger
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/livekit/protocol/logger"
 )
@@ -23,7 +24,7 @@ import (
 // implements webrtc.LeveledLogger
 type logAdapter struct {
 	logger          logger.Logger
-	ignoredPrefixes prefixSet
+	ignoredPrefixes []string
 }
 
 func (l *logAdapter) Trace(msg string) {
@@ -35,7 +36,7 @@ func (l *logAdapter) Tracef(format string, args ...interface{}) {
 }
 
 func (l *logAdapter) Debug(msg string) {
-	if l.ignoredPrefixes.Match(msg) {
+	if l.shouldIgnore(msg) {
 		return
 	}
 	l.logger.Debugw(msg)
@@ -43,14 +44,14 @@ func (l *logAdapter) Debug(msg string) {
 
 func (l *logAdapter) Debugf(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	if l.ignoredPrefixes.Match(msg) {
+	if l.shouldIgnore(msg) {
 		return
 	}
 	l.logger.Debugw(msg)
 }
 
 func (l *logAdapter) Info(msg string) {
-	if l.ignoredPrefixes.Match(msg) {
+	if l.shouldIgnore(msg) {
 		return
 	}
 	l.logger.Infow(msg)
@@ -58,14 +59,14 @@ func (l *logAdapter) Info(msg string) {
 
 func (l *logAdapter) Infof(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	if l.ignoredPrefixes.Match(msg) {
+	if l.shouldIgnore(msg) {
 		return
 	}
 	l.logger.Infow(msg)
 }
 
 func (l *logAdapter) Warn(msg string) {
-	if l.ignoredPrefixes.Match(msg) {
+	if l.shouldIgnore(msg) {
 		return
 	}
 	l.logger.Warnw(msg, nil)
@@ -73,14 +74,14 @@ func (l *logAdapter) Warn(msg string) {
 
 func (l *logAdapter) Warnf(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	if l.ignoredPrefixes.Match(msg) {
+	if l.shouldIgnore(msg) {
 		return
 	}
 	l.logger.Warnw(msg, nil)
 }
 
 func (l *logAdapter) Error(msg string) {
-	if l.ignoredPrefixes.Match(msg) {
+	if l.shouldIgnore(msg) {
 		return
 	}
 	l.logger.Errorw(msg, nil)
@@ -88,8 +89,17 @@ func (l *logAdapter) Error(msg string) {
 
 func (l *logAdapter) Errorf(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	if l.ignoredPrefixes.Match(msg) {
+	if l.shouldIgnore(msg) {
 		return
 	}
 	l.logger.Errorw(msg, nil)
+}
+
+func (l *logAdapter) shouldIgnore(msg string) bool {
+	for _, prefix := range l.ignoredPrefixes {
+		if strings.HasPrefix(msg, prefix) {
+			return true
+		}
+	}
+	return false
 }

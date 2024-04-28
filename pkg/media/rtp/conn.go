@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
+	"github.com/livekit/protocol/logger"
 	"github.com/pion/rtp"
 )
 
@@ -63,6 +64,7 @@ func (c *Conn) DestAddr() *net.UDPAddr {
 }
 
 func (c *Conn) SetDestAddr(addr *net.UDPAddr) {
+	logger.Debugw("Setting destination address", "address", addr)
 	c.dest.Store(addr)
 }
 
@@ -84,6 +86,7 @@ func (c *Conn) Close() error {
 	c.closed.Once(func() {
 		c.conn.Close()
 	})
+	logger.Debugw("Connection closed")
 	return nil
 }
 
@@ -94,6 +97,7 @@ func (c *Conn) Listen(portMin, portMax int, listenAddr string) error {
 
 	var err error
 	c.conn, err = ListenUDPPortRange(portMin, portMax, net.ParseIP(listenAddr))
+	logger.Debugw("Listener initialized", "conn", c.conn)
 	if err != nil {
 		return err
 	}

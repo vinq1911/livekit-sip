@@ -67,6 +67,7 @@ func (s *SwitchWriter[T]) WriteSample(sample T) error {
 	if w == nil {
 		return nil
 	}
+
 	return w.WriteSample(sample)
 }
 

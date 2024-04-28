@@ -18,16 +18,15 @@ import (
 	"context"
 	"sync/atomic"
 
-	"github.com/vinq1911/livekit-sip/pkg/internal/ringbuf"
 	"github.com/vinq1911/livekit-sip/pkg/media/h264"
 
 	"github.com/frostbyte73/core"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/livekit/server-sdk-go/v2/pkg/samplebuilder"
 	"github.com/pion/rtp/codecs"
+
 	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/pkg/media/h264writer"
+	"github.com/pion/webrtc/v3/pkg/media/samplebuilder"
 	"github.com/vinq1911/livekit-sip/pkg/config"
 	"github.com/vinq1911/livekit-sip/pkg/media"
 	"github.com/vinq1911/livekit-sip/pkg/media/opus"
@@ -46,7 +45,7 @@ type Room struct {
 	mix      *mixer.Mixer
 	audioOut media.SwitchWriter[media.PCM16Sample]
 	videoOut media.SwitchWriter[media.H264Sample]
-	identity string
+	videoIn  media.SwitchWriter[media.H264Sample]
 	p        Participant
 	ready    atomic.Bool
 	stopped  core.Fuse
@@ -112,23 +111,14 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 						return
 					}
 
-					logger.Debugw("Setting RTP NewMediaStreamIn")
 					h := rtp.NewMediaStreamIn[opus.Sample](odec)
-					logger.Debugw("Setting HandleLoop for remote track")
 					_ = rtp.HandleLoop(track, h)
 				}
 
 				if track.Kind() == webrtc.RTPCodecTypeVideo {
 
-					sb := samplebuilder.New(1000, &codecs.H264Packet{}, track.Codec().ClockRate, samplebuilder.WithPacketDroppedHandler(func() {
-						rp.WritePLI(track.SSRC())
-					}))
-
-					buffer := ringbuf.New[byte](1000)
-					w := h264writer.NewWith(buffer)
-
-					logger.Debugw("Running video track loop")
-					go VideoTrackLoop(sb, w, track)
+					th := createVideoTrackHandler(&r.videoIn)
+					_ = rtp.HandleLoop(track, th)
 
 				}
 
@@ -175,11 +165,29 @@ func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room
 	return r, nil
 }
 
+func createVideoTrackHandler(track media.H264Writer) rtp.Handler {
+
+	sb := samplebuilder.New(1000, &codecs.H264Packet{}, 90000)
+
+	return rtp.HandlerFunc(func(rp *rtp.Packet) error {
+		sb.Push(rp)
+		for {
+			p := sb.Pop()
+			if p == nil {
+				break
+			}
+
+			track.WriteSample(p.Data)
+		}
+		return nil
+	})
+}
+
 func (r *Room) AudioOutput() media.Writer[media.PCM16Sample] {
 	return r.audioOut.Get()
 }
 
-func (r *Room) VideoOutput() media.Writer[media.H264Sample] {
+func (r *Room) VideoOutput() media.H264Writer {
 	return r.videoOut.Get()
 }
 
@@ -190,28 +198,11 @@ func (r *Room) SetAudioOutput(out media.Writer[media.PCM16Sample]) {
 	r.audioOut.Set(out)
 }
 
-func (r *Room) SetVideoOutput(out media.Writer[media.H264Sample]) {
+func (r *Room) SetVideoOutput(out media.H264Writer) {
 	if r == nil {
 		return
 	}
 	r.videoOut.Set(out)
-}
-
-func VideoTrackLoop(sb *samplebuilder.SampleBuilder, mw *h264writer.H264Writer, track *webrtc.TrackRemote) {
-	defer mw.Close()
-
-	for {
-		pkt, _, err := track.ReadRTP()
-		if err != nil {
-			logger.Debugw("Error in RTP processing", "error", err)
-			break
-		}
-		sb.Push(pkt)
-
-		for _, p := range sb.PopPackets() {
-			mw.WriteRTP(p)
-		}
-	}
 }
 
 func (r *Room) Close() error {
@@ -234,26 +225,26 @@ func (r *Room) Participant() Participant {
 	return r.p
 }
 
-func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Writer[media.H264Sample], error) {
-	audioTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, r.identity+"-audio", r.identity+"-audio-pion")
+func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Writer[[]byte], error) {
+	audioTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, r.p.Identity+"-audio", r.p.Identity+"-audio-pion")
 	if err != nil {
 		return nil, nil, err
 	}
 
-	videoTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, r.identity+"-video", r.identity+"-video-pion")
+	videoTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, r.p.Identity+"-video", r.p.Identity+"-video-pion")
 	if err != nil {
 		return nil, nil, err
 	}
 
 	p := r.room.LocalParticipant
 	if _, err = p.PublishTrack(audioTrack, &lksdk.TrackPublicationOptions{
-		Name: r.identity + "-audio",
+		Name: r.p.Identity + "-audio",
 	}); err != nil {
 		return nil, nil, err
 	}
 
 	if _, err = p.PublishTrack(videoTrack, &lksdk.TrackPublicationOptions{
-		Name:        r.identity + "-video",
+		Name:        r.p.Identity + "-video",
 		VideoWidth:  1280,
 		VideoHeight: 720,
 	}); err != nil {
@@ -268,7 +259,7 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Wri
 		return nil, nil, err
 	}
 
-	vw := h264.BuildSampleWriter[media.H264Sample](videoTrack, rtp.DefFrameDur)
+	vw := h264.BuildSampleWriter[[]byte](videoTrack, rtp.DefFrameDur)
 	return pw, vw, nil
 }
 

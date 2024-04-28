@@ -308,6 +308,30 @@ func sdpGetAudioDest(offer sdp.SessionDescription) *net.UDPAddr {
 	}
 }
 
+func sdpGetVideoDest(offer sdp.SessionDescription) *net.UDPAddr {
+	ci := offer.ConnectionInformation
+
+	if ci.NetworkType != "IN" {
+		return nil
+	}
+
+	ip, err := netip.ParseAddr(ci.Address.Address)
+	if err != nil {
+		return nil
+	}
+
+	_, video := sdpGetAudioVideo(offer)
+
+	if video == nil {
+		return nil
+	}
+
+	return &net.UDPAddr{
+		IP:   ip.AsSlice(),
+		Port: video.MediaName.Port.Value,
+	}
+}
+
 type sdpCodecResult struct {
 	Video     rtp.VideoCodec
 	VideoType byte
@@ -359,7 +383,7 @@ func sdpGetCodec(audioAttrs []sdp.Attribute, videoAttrs []sdp.Attribute) (*sdpCo
 				dtmfType = byte(typ)
 				continue
 			}
-			logger.Debugw("Testing audio codec", "name", name, "value", m.Value)
+			logger.Debugw("Testing audio codec", "name", name, "value", m.Value, "type", sub[0], "strings", m.Value, "sub", sub)
 			codec, ok := lksdp.CodecByName(name).(rtp.AudioCodec)
 			if !ok {
 				continue
@@ -400,7 +424,7 @@ func sdpGetCodec(audioAttrs []sdp.Attribute, videoAttrs []sdp.Attribute) (*sdpCo
 		logger.Debugw("Audio codec NOT found")
 		return nil, errors.New("common audio codec not found")
 	} else {
-		logger.Debugw("Audio codec found", "codec", audioCodec.Info().SDPName, "type", string(audioType))
+		logger.Debugw("Audio codec found", "codec", audioCodec.Info().SDPName, "type", audioType)
 	}
 
 	if videoCodec == nil {

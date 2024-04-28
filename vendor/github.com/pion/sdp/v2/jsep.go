@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package sdp
 
 import (
@@ -9,22 +12,25 @@ import (
 
 // Constants for SDP attributes used in JSEP
 const (
-	AttrKeyIdentity        = "identity"
-	AttrKeyGroup           = "group"
-	AttrKeySSRC            = "ssrc"
-	AttrKeySSRCGroup       = "ssrc-group"
-	AttrKeyMsid            = "msid"
-	AttrKeyMsidSemantic    = "msid-semantic"
-	AttrKeyConnectionSetup = "setup"
-	AttrKeyMID             = "mid"
-	AttrKeyICELite         = "ice-lite"
-	AttrKeyRTCPMux         = "rtcp-mux"
-	AttrKeyRTCPRsize       = "rtcp-rsize"
-	AttrKeyInactive        = "inactive"
-	AttrKeyRecvOnly        = "recvonly"
-	AttrKeySendOnly        = "sendonly"
-	AttrKeySendRecv        = "sendrecv"
-	AttrKeyExtMap          = "extmap"
+	AttrKeyCandidate        = "candidate"
+	AttrKeyEndOfCandidates  = "end-of-candidates"
+	AttrKeyIdentity         = "identity"
+	AttrKeyGroup            = "group"
+	AttrKeySSRC             = "ssrc"
+	AttrKeySSRCGroup        = "ssrc-group"
+	AttrKeyMsid             = "msid"
+	AttrKeyMsidSemantic     = "msid-semantic"
+	AttrKeyConnectionSetup  = "setup"
+	AttrKeyMID              = "mid"
+	AttrKeyICELite          = "ice-lite"
+	AttrKeyRTCPMux          = "rtcp-mux"
+	AttrKeyRTCPRsize        = "rtcp-rsize"
+	AttrKeyInactive         = "inactive"
+	AttrKeyRecvOnly         = "recvonly"
+	AttrKeySendOnly         = "sendonly"
+	AttrKeySendRecv         = "sendrecv"
+	AttrKeyExtMap           = "extmap"
+	AttrKeyExtMapAllowMixed = "extmap-allow-mixed"
 )
 
 // Constants for semantic tokens used in JSEP
@@ -40,9 +46,10 @@ const (
 	ExtMapValueTransportCC = 3
 )
 
-// extMapURI is a map
-var extMapURI = map[int]string{
-	ExtMapValueTransportCC: "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+func extMapURI() map[int]string {
+	return map[int]string{
+		ExtMapValueTransportCC: "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+	}
 }
 
 // API to match draft-ietf-rtcweb-jsep
@@ -50,12 +57,21 @@ var extMapURI = map[int]string{
 
 // NewJSEPSessionDescription creates a new SessionDescription with
 // some settings that are required by the JSEP spec.
-func NewJSEPSessionDescription(identity bool) *SessionDescription {
+//
+// Note: Since v2.4.0, session ID has been fixed to use crypto random according to
+//
+//	JSEP spec, so that NewJSEPSessionDescription now returns error as a second
+//	return value.
+func NewJSEPSessionDescription(identity bool) (*SessionDescription, error) {
+	sid, err := newSessionID()
+	if err != nil {
+		return nil, err
+	}
 	d := &SessionDescription{
 		Version: 0,
 		Origin: Origin{
 			Username:       "-",
-			SessionID:      newSessionID(),
+			SessionID:      sid,
 			SessionVersion: uint64(time.Now().Unix()),
 			NetworkType:    "IN",
 			AddressType:    "IP4",
@@ -80,7 +96,7 @@ func NewJSEPSessionDescription(identity bool) *SessionDescription {
 		d.WithPropertyAttribute(AttrKeyIdentity)
 	}
 
-	return d
+	return d, nil
 }
 
 // WithPropertyAttribute adds a property attribute 'a=key' to the session description
@@ -108,9 +124,8 @@ func (s *SessionDescription) WithMedia(md *MediaDescription) *SessionDescription
 
 // NewJSEPMediaDescription creates a new MediaName with
 // some settings that are required by the JSEP spec.
-func NewJSEPMediaDescription(codecType string, codecPrefs []string) *MediaDescription {
-	// TODO: handle codecPrefs
-	d := &MediaDescription{
+func NewJSEPMediaDescription(codecType string, _ []string) *MediaDescription {
+	return &MediaDescription{
 		MediaName: MediaName{
 			Media:  codecType,
 			Port:   RangedPort{Value: 9},
@@ -124,7 +139,6 @@ func NewJSEPMediaDescription(codecType string, codecPrefs []string) *MediaDescri
 			},
 		},
 	}
-	return d
 }
 
 // WithPropertyAttribute adds a property attribute 'a=key' to the media description
@@ -156,7 +170,7 @@ func (d *MediaDescription) WithCodec(payloadType uint8, name string, clockrate u
 	d.MediaName.Formats = append(d.MediaName.Formats, strconv.Itoa(int(payloadType)))
 	rtpmap := fmt.Sprintf("%d %s/%d", payloadType, name, clockrate)
 	if channels > 0 {
-		rtpmap = rtpmap + fmt.Sprintf("/%d", channels)
+		rtpmap += fmt.Sprintf("/%d", channels)
 	}
 	d.WithValueAttribute("rtpmap", rtpmap)
 	if fmtp != "" {
@@ -180,11 +194,6 @@ func (d *MediaDescription) WithCandidate(value string) *MediaDescription {
 	return d.WithValueAttribute("candidate", value)
 }
 
-// WithICECandidate adds an ICE candidate to the media description
-func (d *MediaDescription) WithICECandidate(c ICECandidate) *MediaDescription {
-	return d.WithValueAttribute("candidate", c.Marshal())
-}
-
 // WithExtMap adds an extmap to the media description
 func (d *MediaDescription) WithExtMap(e ExtMap) *MediaDescription {
 	return d.WithPropertyAttribute(e.Marshal())
@@ -192,7 +201,7 @@ func (d *MediaDescription) WithExtMap(e ExtMap) *MediaDescription {
 
 // WithTransportCCExtMap adds an extmap to the media description
 func (d *MediaDescription) WithTransportCCExtMap() *MediaDescription {
-	uri, _ := url.Parse(extMapURI[ExtMapValueTransportCC])
+	uri, _ := url.Parse(extMapURI()[ExtMapValueTransportCC])
 	e := ExtMap{
 		Value: ExtMapValueTransportCC,
 		URI:   uri,

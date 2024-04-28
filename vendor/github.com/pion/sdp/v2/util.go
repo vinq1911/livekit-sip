@@ -1,20 +1,30 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package sdp
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"sort"
 	"strconv"
 	"strings"
 
-	"time"
+	"github.com/pion/randutil"
 )
 
 const (
 	attributeKey = "a="
+)
+
+var (
+	errExtractCodecRtpmap  = errors.New("could not extract codec from rtpmap")
+	errExtractCodecFmtp    = errors.New("could not extract codec from fmtp")
+	errExtractCodecRtcpFb  = errors.New("could not extract codec from rtcp-fb")
+	errPayloadTypeNotFound = errors.New("payload type not found")
+	errCodecNotFound       = errors.New("codec not found")
+	errSyntaxError         = errors.New("SyntaxError")
 )
 
 // ConnectionRole indicates which of the end points should initiate the connection establishment
@@ -49,9 +59,13 @@ func (t ConnectionRole) String() string {
 	}
 }
 
-func newSessionID() uint64 {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return uint64(r.Uint32()*2) >> 2
+func newSessionID() (uint64, error) {
+	// https://tools.ietf.org/html/draft-ietf-rtcweb-jsep-26#section-5.2.1
+	// Session ID is recommended to be constructed by generating a 64-bit
+	// quantity with the highest bit set to zero and the remaining 63-bits
+	// being cryptographically random.
+	id, err := randutil.CryptoUint64()
+	return id & (^(uint64(1) << 63)), err
 }
 
 // Codec represents a codec
@@ -72,9 +86,19 @@ func (c Codec) String() string {
 	return fmt.Sprintf("%d %s/%d/%s (%s) [%s]", c.PayloadType, c.Name, c.ClockRate, c.EncodingParameters, c.Fmtp, strings.Join(c.RTCPFeedback, ", "))
 }
 
+func (c *Codec) appendRTCPFeedback(rtcpFeedback string) {
+	for _, existingRTCPFeedback := range c.RTCPFeedback {
+		if existingRTCPFeedback == rtcpFeedback {
+			return
+		}
+	}
+
+	c.RTCPFeedback = append(c.RTCPFeedback, rtcpFeedback)
+}
+
 func parseRtpmap(rtpmap string) (Codec, error) {
 	var codec Codec
-	parsingFailed := errors.New("could not extract codec from rtpmap")
+	parsingFailed := errExtractCodecRtpmap
 
 	// a=rtpmap:<payload type> <encoding name>/<clock rate>[/<encoding parameters>]
 	split := strings.Split(rtpmap, " ")
@@ -87,7 +111,7 @@ func parseRtpmap(rtpmap string) (Codec, error) {
 		return codec, parsingFailed
 	}
 
-	ptInt, err := strconv.Atoi(ptSplit[1])
+	ptInt, err := strconv.ParseUint(ptSplit[1], 10, 8)
 	if err != nil {
 		return codec, parsingFailed
 	}
@@ -98,7 +122,7 @@ func parseRtpmap(rtpmap string) (Codec, error) {
 	codec.Name = split[0]
 	parts := len(split)
 	if parts > 1 {
-		rate, err := strconv.Atoi(split[1])
+		rate, err := strconv.ParseUint(split[1], 10, 32)
 		if err != nil {
 			return codec, parsingFailed
 		}
@@ -113,7 +137,7 @@ func parseRtpmap(rtpmap string) (Codec, error) {
 
 func parseFmtp(fmtp string) (Codec, error) {
 	var codec Codec
-	parsingFailed := errors.New("could not extract codec from fmtp")
+	parsingFailed := errExtractCodecFmtp
 
 	// a=fmtp:<format> <format specific parameters>
 	split := strings.Split(fmtp, " ")
@@ -128,7 +152,7 @@ func parseFmtp(fmtp string) (Codec, error) {
 		return codec, parsingFailed
 	}
 
-	ptInt, err := strconv.Atoi(split[1])
+	ptInt, err := strconv.ParseUint(split[1], 10, 8)
 	if err != nil {
 		return codec, parsingFailed
 	}
@@ -139,30 +163,33 @@ func parseFmtp(fmtp string) (Codec, error) {
 	return codec, nil
 }
 
-func parseRtcpFb(rtcpFb string) (Codec, error) {
-	var codec Codec
-	parsingFailed := errors.New("could not extract codec from rtcp-fb")
+func parseRtcpFb(rtcpFb string) (codec Codec, isWildcard bool, err error) {
+	var ptInt uint64
+	err = errExtractCodecRtcpFb
 
 	// a=ftcp-fb:<payload type> <RTCP feedback type> [<RTCP feedback parameter>]
 	split := strings.SplitN(rtcpFb, " ", 2)
 	if len(split) != 2 {
-		return codec, parsingFailed
+		return
 	}
 
 	ptSplit := strings.Split(split[0], ":")
 	if len(ptSplit) != 2 {
-		return codec, parsingFailed
+		return
 	}
 
-	ptInt, err := strconv.Atoi(ptSplit[1])
-	if err != nil {
-		return codec, parsingFailed
+	isWildcard = ptSplit[1] == "*"
+	if !isWildcard {
+		ptInt, err = strconv.ParseUint(ptSplit[1], 10, 8)
+		if err != nil {
+			return
+		}
+
+		codec.PayloadType = uint8(ptInt)
 	}
 
-	codec.PayloadType = uint8(ptInt)
 	codec.RTCPFeedback = append(codec.RTCPFeedback, split[1])
-
-	return codec, nil
+	return codec, isWildcard, nil
 }
 
 func mergeCodecs(codec Codec, codecs map[uint8]Codec) {
@@ -189,28 +216,54 @@ func mergeCodecs(codec Codec, codecs map[uint8]Codec) {
 }
 
 func (s *SessionDescription) buildCodecMap() map[uint8]Codec {
-	codecs := make(map[uint8]Codec)
+	codecs := map[uint8]Codec{
+		// static codecs that do not require a rtpmap
+		0: {
+			PayloadType: 0,
+			Name:        "PCMU",
+			ClockRate:   8000,
+		},
+		8: {
+			PayloadType: 8,
+			Name:        "PCMA",
+			ClockRate:   8000,
+		},
+	}
 
+	wildcardRTCPFeedback := []string{}
 	for _, m := range s.MediaDescriptions {
 		for _, a := range m.Attributes {
-			attr := *a.String()
-			if strings.HasPrefix(attr, "rtpmap:") {
+			attr := a.String()
+			switch {
+			case strings.HasPrefix(attr, "rtpmap:"):
 				codec, err := parseRtpmap(attr)
 				if err == nil {
 					mergeCodecs(codec, codecs)
 				}
-			} else if strings.HasPrefix(attr, "fmtp:") {
+			case strings.HasPrefix(attr, "fmtp:"):
 				codec, err := parseFmtp(attr)
 				if err == nil {
 					mergeCodecs(codec, codecs)
 				}
-			} else if strings.HasPrefix(attr, "rtcp-fb:") {
-				codec, err := parseRtcpFb(attr)
-				if err == nil {
+			case strings.HasPrefix(attr, "rtcp-fb:"):
+				codec, isWildcard, err := parseRtcpFb(attr)
+				switch {
+				case err != nil:
+				case isWildcard:
+					wildcardRTCPFeedback = append(wildcardRTCPFeedback, codec.RTCPFeedback...)
+				default:
 					mergeCodecs(codec, codecs)
 				}
 			}
 		}
+	}
+
+	for i, codec := range codecs {
+		for _, newRTCPFeedback := range wildcardRTCPFeedback {
+			codec.appendRTCPFeedback(newRTCPFeedback)
+		}
+
+		codecs[i] = codec
 	}
 
 	return codecs
@@ -264,7 +317,7 @@ func (s *SessionDescription) GetCodecForPayloadType(payloadType uint8) (Codec, e
 		return codec, nil
 	}
 
-	return codec, errors.New("payload type not found")
+	return codec, errPayloadTypeNotFound
 }
 
 // GetPayloadTypeForCodec scans the SessionDescription for a codec that matches the provided codec
@@ -278,62 +331,30 @@ func (s *SessionDescription) GetPayloadTypeForCodec(wanted Codec) (uint8, error)
 		}
 	}
 
-	return 0, errors.New("codec not found")
-}
-
-type lexer struct {
-	desc  *SessionDescription
-	input *bufio.Reader
+	return 0, errCodecNotFound
 }
 
 type stateFn func(*lexer) (stateFn, error)
 
-func readType(input *bufio.Reader) (string, error) {
-	for {
-		b, err := input.ReadByte()
-		if err != nil {
-			return "", err
-		}
-		if b == '\n' || b == '\r' {
-			continue
-		}
-		if err = input.UnreadByte(); err != nil {
-			return "", err
-		}
-
-		key, err := input.ReadString('=')
-		if err != nil {
-			return key, err
-		}
-
-		switch len(key) {
-		case 2:
-			return key, nil
-		default:
-			return key, fmt.Errorf("SyntaxError: %v", strconv.Quote(key))
-		}
-	}
+type lexer struct {
+	desc  *SessionDescription
+	cache *unmarshalCache
+	baseLexer
 }
 
-func readValue(input *bufio.Reader) (string, error) {
-	lineBytes, _, err := input.ReadLine()
-	line := string(lineBytes)
-	if err != nil && err != io.EOF {
-		return line, err
+type keyToState func(key byte) stateFn
+
+func (l *lexer) handleType(fn keyToState) (stateFn, error) {
+	key, err := l.readType()
+	if errors.Is(err, io.EOF) && key == 0 {
+		return nil, nil //nolint:nilnil
+	} else if err != nil {
+		return nil, err
 	}
 
-	if len(line) == 0 {
-		return line, io.EOF
+	if res := fn(key); res != nil {
+		return res, nil
 	}
 
-	return line, nil
-}
-
-func indexOf(element string, data []string) int {
-	for k, v := range data {
-		if element == v {
-			return k
-		}
-	}
-	return -1
+	return nil, l.syntaxError()
 }

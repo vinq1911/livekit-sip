@@ -1,11 +1,11 @@
-api_key: APILkAiZe53zweh
-api_secret: mnSe1PhAWs4LFrSl4zJ5HvGiV0ZfCUxeDZf70cCAbqmC
+api_key: APIfdPdDzaf5N2B
+api_secret: s7fkuYnWBRSYki4WXwrDJiSvBNgafwZ3ffWpd47IKDRA
 ws_url: ws://127.0.0.1:7880
 logging:
   level: debug
 redis:
   address: localhost:6379
-sip_port: 5060
+sip_port: 5062
 rtp_port: 10000-20000
 use_external_ip: false
 use_stun: true

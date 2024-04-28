@@ -71,7 +71,7 @@ type outboundCall struct {
 	mediaRunning  bool
 	lkRoom        *Room
 	lkRoomAudioIn media.Writer[media.PCM16Sample]
-	lkRoomVideoIn media.Writer[media.H264Sample]
+	lkRoomVideoIn media.Writer[[]byte]
 	sipCur        sipOutboundConfig
 	sipInviteReq  *sip.Request
 	sipInviteResp *sip.Response

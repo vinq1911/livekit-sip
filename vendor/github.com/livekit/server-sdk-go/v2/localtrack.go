@@ -484,13 +484,6 @@ func (s *LocalTrack) Close() error {
 	return nil
 }
 
-func (s *LocalTrack) SSRC() webrtc.SSRC {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	return s.ssrc
-}
-
 func (s *LocalTrack) setMuted(muted bool) {
 	s.muted.Store(muted)
 }

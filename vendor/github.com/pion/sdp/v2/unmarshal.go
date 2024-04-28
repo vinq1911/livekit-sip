@@ -1,17 +1,33 @@
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package sdp
 
 import (
-	"bufio"
-	"bytes"
+	"errors"
 	"fmt"
-	"strings"
-
-	"io"
 	"net/url"
 	"strconv"
+	"strings"
+	"sync"
 )
 
-// Unmarshal is the primary function that deserializes the session description
+var (
+	errSDPInvalidSyntax       = errors.New("sdp: invalid syntax")
+	errSDPInvalidNumericValue = errors.New("sdp: invalid numeric value")
+	errSDPInvalidValue        = errors.New("sdp: invalid value")
+	errSDPInvalidPortValue    = errors.New("sdp: invalid port value")
+	errSDPCacheInvalid        = errors.New("sdp: invalid cache")
+
+	//nolint: gochecknoglobals
+	unmarshalCachePool = sync.Pool{
+		New: func() interface{} {
+			return &unmarshalCache{}
+		},
+	}
+)
+
+// UnmarshalString is the primary function that deserializes the session description
 // message and stores it inside of a structured SessionDescription object.
 //
 // The States Transition Table describes the computation flow between functions
@@ -92,15 +108,18 @@ import (
 // |   s15  |    |    14 |    |     | 15 |     |   |    | 12 |   |   |     |   |   |    |   |    |
 // |   s16  |    |    14 |    |     |    |  15 |   |    | 12 |   |   |     |   |   |    |   |    |
 // +--------+----+-------+----+-----+----+-----+---+----+----+---+---+-----+---+---+----+---+----+
-func (s *SessionDescription) Unmarshal(value []byte) error {
-	bufsz := 4096
-	if len(value) < bufsz {
-		bufsz = len(value)
+func (s *SessionDescription) UnmarshalString(value string) error {
+	var ok bool
+	l := new(lexer)
+	if l.cache, ok = unmarshalCachePool.Get().(*unmarshalCache); !ok {
+		return errSDPCacheInvalid
 	}
-	l := &lexer{
-		desc:  s,
-		input: bufio.NewReaderSize(bytes.NewReader(value), bufsz),
-	}
+	defer unmarshalCachePool.Put(l.cache)
+
+	l.cache.reset()
+	l.desc = s
+	l.value = value
+
 	for state := s1; state != nil; {
 		var err error
 		state, err = state(l)
@@ -108,424 +127,352 @@ func (s *SessionDescription) Unmarshal(value []byte) error {
 			return err
 		}
 	}
+
+	s.Attributes = l.cache.cloneSessionAttributes()
+	populateMediaAttributes(l.cache, l.desc)
 	return nil
 }
 
+// Unmarshal converts the value into a []byte and then calls UnmarshalString.
+// Callers should use the more performant UnmarshalString
+func (s *SessionDescription) Unmarshal(value []byte) error {
+	return s.UnmarshalString(string(value))
+}
+
 func s1(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
-	}
-
-	if key == "v=" {
-		return unmarshalProtocolVersion, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+	return l.handleType(func(key byte) stateFn {
+		if key == 'v' {
+			return unmarshalProtocolVersion
+		}
+		return nil
+	})
 }
 
 func s2(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
-	}
-
-	if key == "o=" {
-		return unmarshalOrigin, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+	return l.handleType(func(key byte) stateFn {
+		if key == 'o' {
+			return unmarshalOrigin
+		}
+		return nil
+	})
 }
 
 func s3(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		return nil, err
-	}
-
-	if key == "s=" {
-		return unmarshalSessionName, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+	return l.handleType(func(key byte) stateFn {
+		if key == 's' {
+			return unmarshalSessionName
+		}
+		return nil
+	})
 }
 
 func s4(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
-	}
-
-	switch key {
-	case "i=":
-		return unmarshalSessionInformation, nil
-	case "u=":
-		return unmarshalURI, nil
-	case "e=":
-		return unmarshalEmail, nil
-	case "p=":
-		return unmarshalPhone, nil
-	case "c=":
-		return unmarshalSessionConnectionInformation, nil
-	case "b=":
-		return unmarshalSessionBandwidth, nil
-	case "t=":
-		return unmarshalTiming, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'i':
+			return unmarshalSessionInformation
+		case 'u':
+			return unmarshalURI
+		case 'e':
+			return unmarshalEmail
+		case 'p':
+			return unmarshalPhone
+		case 'c':
+			return unmarshalSessionConnectionInformation
+		case 'b':
+			return unmarshalSessionBandwidth
+		case 't':
+			return unmarshalTiming
+		}
+		return nil
+	})
 }
 
 func s5(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		return nil, err
-	}
-
-	switch key {
-	case "b=":
-		return unmarshalSessionBandwidth, nil
-	case "t=":
-		return unmarshalTiming, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'b':
+			return unmarshalSessionBandwidth
+		case 't':
+			return unmarshalTiming
+		}
+		return nil
+	})
 }
 
 func s6(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
-	}
-
-	switch key {
-	case "p=":
-		return unmarshalPhone, nil
-	case "c=":
-		return unmarshalSessionConnectionInformation, nil
-	case "b=":
-		return unmarshalSessionBandwidth, nil
-	case "t=":
-		return unmarshalTiming, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'p':
+			return unmarshalPhone
+		case 'c':
+			return unmarshalSessionConnectionInformation
+		case 'b':
+			return unmarshalSessionBandwidth
+		case 't':
+			return unmarshalTiming
+		}
+		return nil
+	})
 }
 
 func s7(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
-	}
-
-	switch key {
-	case "u=":
-		return unmarshalURI, nil
-	case "e=":
-		return unmarshalEmail, nil
-	case "p=":
-		return unmarshalPhone, nil
-	case "c=":
-		return unmarshalSessionConnectionInformation, nil
-	case "b=":
-		return unmarshalSessionBandwidth, nil
-	case "t=":
-		return unmarshalTiming, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'u':
+			return unmarshalURI
+		case 'e':
+			return unmarshalEmail
+		case 'p':
+			return unmarshalPhone
+		case 'c':
+			return unmarshalSessionConnectionInformation
+		case 'b':
+			return unmarshalSessionBandwidth
+		case 't':
+			return unmarshalTiming
+		}
+		return nil
+	})
 }
 
 func s8(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
-	}
-
-	switch key {
-	case "c=":
-		return unmarshalSessionConnectionInformation, nil
-	case "b=":
-		return unmarshalSessionBandwidth, nil
-	case "t=":
-		return unmarshalTiming, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'c':
+			return unmarshalSessionConnectionInformation
+		case 'b':
+			return unmarshalSessionBandwidth
+		case 't':
+			return unmarshalTiming
+		}
+		return nil
+	})
 }
 
 func s9(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		if err == io.EOF && key == "" {
-			return nil, nil
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'z':
+			return unmarshalTimeZones
+		case 'k':
+			return unmarshalSessionEncryptionKey
+		case 'a':
+			return unmarshalSessionAttribute
+		case 'r':
+			return unmarshalRepeatTimes
+		case 't':
+			return unmarshalTiming
+		case 'm':
+			return unmarshalMediaDescription
 		}
-		return nil, err
-	}
-
-	switch key {
-	case "z=":
-		return unmarshalTimeZones, nil
-	case "k=":
-		return unmarshalSessionEncryptionKey, nil
-	case "a=":
-		return unmarshalSessionAttribute, nil
-	case "r=":
-		return unmarshalRepeatTimes, nil
-	case "t=":
-		return unmarshalTiming, nil
-	case "m=":
-		return unmarshalMediaDescription, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+		return nil
+	})
 }
 
 func s10(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
-	}
-
-	switch key {
-	case "e=":
-		return unmarshalEmail, nil
-	case "p=":
-		return unmarshalPhone, nil
-	case "c=":
-		return unmarshalSessionConnectionInformation, nil
-	case "b=":
-		return unmarshalSessionBandwidth, nil
-	case "t=":
-		return unmarshalTiming, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'e':
+			return unmarshalEmail
+		case 'p':
+			return unmarshalPhone
+		case 'c':
+			return unmarshalSessionConnectionInformation
+		case 'b':
+			return unmarshalSessionBandwidth
+		case 't':
+			return unmarshalTiming
+		}
+		return nil
+	})
 }
 
 func s11(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		if err == io.EOF && key == "" {
-			return nil, nil
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'a':
+			return unmarshalSessionAttribute
+		case 'm':
+			return unmarshalMediaDescription
 		}
-		return nil, err
-	}
-
-	switch key {
-	case "a=":
-		return unmarshalSessionAttribute, nil
-	case "m=":
-		return unmarshalMediaDescription, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+		return nil
+	})
 }
 
 func s12(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		if err == io.EOF && key == "" {
-			return nil, nil
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'a':
+			return unmarshalMediaAttribute
+		case 'k':
+			return unmarshalMediaEncryptionKey
+		case 'b':
+			return unmarshalMediaBandwidth
+		case 'c':
+			return unmarshalMediaConnectionInformation
+		case 'i':
+			return unmarshalMediaTitle
+		case 'm':
+			return unmarshalMediaDescription
 		}
-		return nil, err
-	}
-
-	switch key {
-	case "a=":
-		return unmarshalMediaAttribute, nil
-	case "k=":
-		return unmarshalMediaEncryptionKey, nil
-	case "b=":
-		return unmarshalMediaBandwidth, nil
-	case "c=":
-		return unmarshalMediaConnectionInformation, nil
-	case "i=":
-		return unmarshalMediaTitle, nil
-	case "m=":
-		return unmarshalMediaDescription, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+		return nil
+	})
 }
 
 func s13(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		if err == io.EOF && key == "" {
-			return nil, nil
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'a':
+			return unmarshalSessionAttribute
+		case 'k':
+			return unmarshalSessionEncryptionKey
+		case 'm':
+			return unmarshalMediaDescription
 		}
-		return nil, err
-	}
-
-	switch key {
-	case "a=":
-		return unmarshalSessionAttribute, nil
-	case "k=":
-		return unmarshalSessionEncryptionKey, nil
-	case "m=":
-		return unmarshalMediaDescription, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+		return nil
+	})
 }
 
 func s14(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		if err == io.EOF && key == "" {
-			return nil, nil
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'a':
+			return unmarshalMediaAttribute
+		case 'k':
+			// Non-spec ordering
+			return unmarshalMediaEncryptionKey
+		case 'b':
+			// Non-spec ordering
+			return unmarshalMediaBandwidth
+		case 'c':
+			// Non-spec ordering
+			return unmarshalMediaConnectionInformation
+		case 'i':
+			// Non-spec ordering
+			return unmarshalMediaTitle
+		case 'm':
+			return unmarshalMediaDescription
 		}
-		return nil, err
-	}
-
-	switch key {
-	case "a=":
-		return unmarshalMediaAttribute, nil
-	case "k=":
-		// Non-spec ordering
-		return unmarshalMediaEncryptionKey, nil
-	case "b=":
-		// Non-spec ordering
-		return unmarshalMediaBandwidth, nil
-	case "c=":
-		// Non-spec ordering
-		return unmarshalMediaConnectionInformation, nil
-	case "i=":
-		// Non-spec ordering
-		return unmarshalMediaTitle, nil
-	case "m=":
-		return unmarshalMediaDescription, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+		return nil
+	})
 }
 
 func s15(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		if err == io.EOF && key == "" {
-			return nil, nil
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'a':
+			return unmarshalMediaAttribute
+		case 'k':
+			return unmarshalMediaEncryptionKey
+		case 'b':
+			return unmarshalMediaBandwidth
+		case 'c':
+			return unmarshalMediaConnectionInformation
+		case 'i':
+			// Non-spec ordering
+			return unmarshalMediaTitle
+		case 'm':
+			return unmarshalMediaDescription
 		}
-		return nil, err
-	}
-
-	switch key {
-	case "a=":
-		return unmarshalMediaAttribute, nil
-	case "k=":
-		return unmarshalMediaEncryptionKey, nil
-	case "b=":
-		return unmarshalMediaBandwidth, nil
-	case "c=":
-		return unmarshalMediaConnectionInformation, nil
-	case "i=":
-		// Non-spec ordering
-		return unmarshalMediaTitle, nil
-	case "m=":
-		return unmarshalMediaDescription, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+		return nil
+	})
 }
 
 func s16(l *lexer) (stateFn, error) {
-	key, err := readType(l.input)
-	if err != nil {
-		if err == io.EOF && key == "" {
-			return nil, nil
+	return l.handleType(func(key byte) stateFn {
+		switch key {
+		case 'a':
+			return unmarshalMediaAttribute
+		case 'k':
+			return unmarshalMediaEncryptionKey
+		case 'c':
+			return unmarshalMediaConnectionInformation
+		case 'b':
+			return unmarshalMediaBandwidth
+		case 'i':
+			// Non-spec ordering
+			return unmarshalMediaTitle
+		case 'm':
+			return unmarshalMediaDescription
 		}
-		return nil, err
-	}
-
-	switch key {
-	case "a=":
-		return unmarshalMediaAttribute, nil
-	case "k=":
-		return unmarshalMediaEncryptionKey, nil
-	case "c=":
-		return unmarshalMediaConnectionInformation, nil
-	case "b=":
-		return unmarshalMediaBandwidth, nil
-	case "i=":
-		// Non-spec ordering
-		return unmarshalMediaTitle, nil
-	case "m=":
-		return unmarshalMediaDescription, nil
-	}
-
-	return nil, fmt.Errorf("sdp: invalid syntax `%v`", key)
+		return nil
+	})
 }
 
 func unmarshalProtocolVersion(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	version, err := l.readUint64Field()
 	if err != nil {
 		return nil, err
-	}
-
-	version, err := strconv.ParseInt(value, 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid numeric value `%v`", value)
 	}
 
 	// As off the latest draft of the rfc this value is required to be 0.
 	// https://tools.ietf.org/html/draft-ietf-rtcweb-jsep-24#section-5.8.1
 	if version != 0 {
-		return nil, fmt.Errorf("sdp: invalid value `%v`", version)
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, version)
+	}
+
+	if err := l.nextLine(); err != nil {
+		return nil, err
 	}
 
 	return s2, nil
 }
 
 func unmarshalOrigin(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	var err error
+
+	l.desc.Origin.Username, err = l.readField()
 	if err != nil {
 		return nil, err
 	}
 
-	fields := strings.Fields(value)
-	if len(fields) != 6 {
-		return nil, fmt.Errorf("sdp: invalid syntax `o=%v`", fields)
+	l.desc.Origin.SessionID, err = l.readUint64Field()
+	if err != nil {
+		return nil, err
 	}
 
-	sessionID, err := strconv.ParseUint(fields[1], 10, 64)
+	l.desc.Origin.SessionVersion, err = l.readUint64Field()
 	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid numeric value `%v`", fields[1])
+		return nil, err
 	}
 
-	sessionVersion, err := strconv.ParseUint(fields[2], 10, 64)
+	l.desc.Origin.NetworkType, err = l.readField()
 	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid numeric value `%v`", fields[2])
+		return nil, err
 	}
 
 	// Set according to currently registered with IANA
 	// https://tools.ietf.org/html/rfc4566#section-8.2.6
-	if i := indexOf(fields[3], []string{"IN"}); i == -1 {
-		return nil, fmt.Errorf("sdp: invalid value `%v`", fields[3])
+	if !anyOf(l.desc.Origin.NetworkType, "IN") {
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, l.desc.Origin.NetworkType)
+	}
+
+	l.desc.Origin.AddressType, err = l.readField()
+	if err != nil {
+		return nil, err
 	}
 
 	// Set according to currently registered with IANA
 	// https://tools.ietf.org/html/rfc4566#section-8.2.7
-	if i := indexOf(fields[4], []string{"IP4", "IP6"}); i == -1 {
-		return nil, fmt.Errorf("sdp: invalid value `%v`", fields[4])
+	if !anyOf(l.desc.Origin.AddressType, "IP4", "IP6") {
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, l.desc.Origin.AddressType)
 	}
 
-	// TODO validated UnicastAddress
+	l.desc.Origin.UnicastAddress, err = l.readField()
+	if err != nil {
+		return nil, err
+	}
 
-	l.desc.Origin = Origin{
-		Username:       fields[0],
-		SessionID:      sessionID,
-		SessionVersion: sessionVersion,
-		NetworkType:    fields[3],
-		AddressType:    fields[4],
-		UnicastAddress: fields[5],
+	if err := l.nextLine(); err != nil {
+		return nil, err
 	}
 
 	return s3, nil
 }
 
 func unmarshalSessionName(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
@@ -535,7 +482,7 @@ func unmarshalSessionName(l *lexer) (stateFn, error) {
 }
 
 func unmarshalSessionInformation(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
@@ -546,7 +493,7 @@ func unmarshalSessionInformation(l *lexer) (stateFn, error) {
 }
 
 func unmarshalURI(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
@@ -560,7 +507,7 @@ func unmarshalURI(l *lexer) (stateFn, error) {
 }
 
 func unmarshalEmail(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
@@ -571,7 +518,7 @@ func unmarshalEmail(l *lexer) (stateFn, error) {
 }
 
 func unmarshalPhone(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
@@ -582,57 +529,66 @@ func unmarshalPhone(l *lexer) (stateFn, error) {
 }
 
 func unmarshalSessionConnectionInformation(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	var err error
+	l.desc.ConnectionInformation, err = l.unmarshalConnectionInformation()
 	if err != nil {
 		return nil, err
-	}
-
-	l.desc.ConnectionInformation, err = unmarshalConnectionInformation(value)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `c=%v`", value)
 	}
 	return s5, nil
 }
 
-func unmarshalConnectionInformation(value string) (*ConnectionInformation, error) {
-	fields := strings.Fields(value)
-	if len(fields) < 2 {
-		return nil, fmt.Errorf("sdp: invalid syntax `c=%v`", fields)
+func (l *lexer) unmarshalConnectionInformation() (*ConnectionInformation, error) {
+	var err error
+	var c ConnectionInformation
+
+	c.NetworkType, err = l.readField()
+	if err != nil {
+		return nil, err
 	}
 
 	// Set according to currently registered with IANA
 	// https://tools.ietf.org/html/rfc4566#section-8.2.6
-	if i := indexOf(fields[0], []string{"IN"}); i == -1 {
-		return nil, fmt.Errorf("sdp: invalid value `%v`", fields[0])
+	if !anyOf(c.NetworkType, "IN") {
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, c.NetworkType)
+	}
+
+	c.AddressType, err = l.readField()
+	if err != nil {
+		return nil, err
 	}
 
 	// Set according to currently registered with IANA
 	// https://tools.ietf.org/html/rfc4566#section-8.2.7
-	if i := indexOf(fields[1], []string{"IP4", "IP6"}); i == -1 {
-		return nil, fmt.Errorf("sdp: invalid value `%v`", fields[1])
+	if !anyOf(c.AddressType, "IP4", "IP6") {
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, c.AddressType)
 	}
 
-	connAddr := new(Address)
-	if len(fields) > 2 {
-		connAddr.Address = fields[2]
+	address, err := l.readField()
+	if err != nil {
+		return nil, err
 	}
 
-	return &ConnectionInformation{
-		NetworkType: fields[0],
-		AddressType: fields[1],
-		Address:     connAddr,
-	}, nil
+	if address != "" {
+		c.Address = new(Address)
+		c.Address.Address = address
+	}
+
+	if err := l.nextLine(); err != nil {
+		return nil, err
+	}
+
+	return &c, nil
 }
 
 func unmarshalSessionBandwidth(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
 
 	bandwidth, err := unmarshalBandwidth(value)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w `b=%v`", errSDPInvalidValue, value)
 	}
 	l.desc.Bandwidth = append(l.desc.Bandwidth, *bandwidth)
 
@@ -642,23 +598,23 @@ func unmarshalSessionBandwidth(l *lexer) (stateFn, error) {
 func unmarshalBandwidth(value string) (*Bandwidth, error) {
 	parts := strings.Split(value, ":")
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("sdp: invalid syntax `b=%v`", parts)
+		return nil, fmt.Errorf("%w `b=%v`", errSDPInvalidValue, parts)
 	}
 
 	experimental := strings.HasPrefix(parts[0], "X-")
 	if experimental {
 		parts[0] = strings.TrimPrefix(parts[0], "X-")
-	} else {
+	} else if !anyOf(parts[0], "CT", "AS", "TIAS", "RS", "RR") {
 		// Set according to currently registered with IANA
 		// https://tools.ietf.org/html/rfc4566#section-5.8
-		if i := indexOf(parts[0], []string{"CT", "AS", "TIAS"}); i == -1 {
-			return nil, fmt.Errorf("sdp: invalid value `%v`", parts[0])
-		}
+		// https://tools.ietf.org/html/rfc3890#section-6.2
+		// https://tools.ietf.org/html/rfc3556#section-2
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, parts[0])
 	}
 
 	bandwidth, err := strconv.ParseUint(parts[1], 10, 64)
 	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid numeric value `%v`", parts[1])
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidNumericValue, parts[1])
 	}
 
 	return &Bandwidth{
@@ -669,92 +625,99 @@ func unmarshalBandwidth(value string) (*Bandwidth, error) {
 }
 
 func unmarshalTiming(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	var err error
+	var td TimeDescription
+
+	td.Timing.StartTime, err = l.readUint64Field()
 	if err != nil {
 		return nil, err
 	}
 
-	fields := strings.Fields(value)
-	if len(fields) < 2 {
-		return nil, fmt.Errorf("sdp: invalid syntax `t=%v`", fields)
+	td.Timing.StopTime, err = l.readUint64Field()
+	if err != nil {
+		return nil, err
 	}
 
-	td := TimeDescription{}
-
-	td.Timing.StartTime, err = strconv.ParseUint(fields[0], 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid numeric value `%v`", fields[1])
-	}
-
-	td.Timing.StopTime, err = strconv.ParseUint(fields[1], 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid numeric value `%v`", fields[1])
+	if err := l.nextLine(); err != nil {
+		return nil, err
 	}
 
 	l.desc.TimeDescriptions = append(l.desc.TimeDescriptions, td)
-
 	return s9, nil
 }
 
 func unmarshalRepeatTimes(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	var err error
+	var newRepeatTime RepeatTime
+
+	latestTimeDesc := &l.desc.TimeDescriptions[len(l.desc.TimeDescriptions)-1]
+
+	field, err := l.readField()
 	if err != nil {
 		return nil, err
 	}
 
-	fields := strings.Fields(value)
-	if len(fields) < 3 {
-		return nil, fmt.Errorf("sdp: invalid syntax `r=%v`", fields)
-	}
-
-	latestTimeDesc := &l.desc.TimeDescriptions[len(l.desc.TimeDescriptions)-1]
-
-	newRepeatTime := RepeatTime{}
-	newRepeatTime.Interval, err = parseTimeUnits(fields[0])
+	newRepeatTime.Interval, err = parseTimeUnits(field)
 	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid value `%v`", fields)
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, field)
 	}
 
-	newRepeatTime.Duration, err = parseTimeUnits(fields[1])
+	field, err = l.readField()
 	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid value `%v`", fields)
+		return nil, err
 	}
 
-	for i := 2; i < len(fields); i++ {
-		offset, err := parseTimeUnits(fields[i])
+	newRepeatTime.Duration, err = parseTimeUnits(field)
+	if err != nil {
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, field)
+	}
+
+	for {
+		field, err := l.readField()
 		if err != nil {
-			return nil, fmt.Errorf("sdp: invalid value `%v`", fields)
+			return nil, err
+		}
+		if field == "" {
+			break
+		}
+		offset, err := parseTimeUnits(field)
+		if err != nil {
+			return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, field)
 		}
 		newRepeatTime.Offsets = append(newRepeatTime.Offsets, offset)
 	}
-	latestTimeDesc.RepeatTimes = append(latestTimeDesc.RepeatTimes, newRepeatTime)
 
+	if err := l.nextLine(); err != nil {
+		return nil, err
+	}
+
+	latestTimeDesc.RepeatTimes = append(latestTimeDesc.RepeatTimes, newRepeatTime)
 	return s9, nil
 }
 
 func unmarshalTimeZones(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
-	if err != nil {
-		return nil, err
-	}
-
 	// These fields are transimitted in pairs
 	// z=<adjustment time> <offset> <adjustment time> <offset> ....
 	// so we are making sure that there are actually multiple of 2 total.
-	fields := strings.Fields(value)
-	if len(fields)%2 != 0 {
-		return nil, fmt.Errorf("sdp: invalid syntax `t=%v`", fields)
-	}
-
-	for i := 0; i < len(fields); i += 2 {
+	for {
+		var err error
 		var timeZone TimeZone
 
-		timeZone.AdjustmentTime, err = strconv.ParseUint(fields[i], 10, 64)
+		timeZone.AdjustmentTime, err = l.readUint64Field()
 		if err != nil {
-			return nil, fmt.Errorf("sdp: invalid value `%v`", fields)
+			return nil, err
 		}
 
-		timeZone.Offset, err = parseTimeUnits(fields[i+1])
+		offset, err := l.readField()
+		if err != nil {
+			return nil, err
+		}
+
+		if offset == "" {
+			break
+		}
+
+		timeZone.Offset, err = parseTimeUnits(offset)
 		if err != nil {
 			return nil, err
 		}
@@ -762,11 +725,15 @@ func unmarshalTimeZones(l *lexer) (stateFn, error) {
 		l.desc.TimeZones = append(l.desc.TimeZones, timeZone)
 	}
 
+	if err := l.nextLine(); err != nil {
+		return nil, err
+	}
+
 	return s13, nil
 }
 
 func unmarshalSessionEncryptionKey(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
@@ -777,81 +744,98 @@ func unmarshalSessionEncryptionKey(l *lexer) (stateFn, error) {
 }
 
 func unmarshalSessionAttribute(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
 
 	i := strings.IndexRune(value, ':')
-	var a Attribute
+	a := l.cache.getSessionAttribute()
 	if i > 0 {
-		a = NewAttribute(value[:i], value[i+1:])
+		a.Key = value[:i]
+		a.Value = value[i+1:]
 	} else {
-		a = NewPropertyAttribute(value)
+		a.Key = value
 	}
 
-	l.desc.Attributes = append(l.desc.Attributes, a)
 	return s11, nil
 }
 
 func unmarshalMediaDescription(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	populateMediaAttributes(l.cache, l.desc)
+	var newMediaDesc MediaDescription
+
+	// <media>
+	field, err := l.readField()
 	if err != nil {
 		return nil, err
 	}
 
-	fields := strings.Fields(value)
-	if len(fields) < 4 {
-		return nil, fmt.Errorf("sdp: invalid syntax `m=%v`", fields)
-	}
-
-	newMediaDesc := &MediaDescription{}
-
-	// <media>
 	// Set according to currently registered with IANA
 	// https://tools.ietf.org/html/rfc4566#section-5.14
-	if i := indexOf(fields[0], []string{"audio", "video", "text", "application", "message"}); i == -1 {
-		return nil, fmt.Errorf("sdp: invalid value `%v`", fields[0])
+	if !anyOf(field, "audio", "video", "text", "application", "message") {
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, field)
 	}
-	newMediaDesc.MediaName.Media = fields[0]
+	newMediaDesc.MediaName.Media = field
 
 	// <port>
-	parts := strings.Split(fields[1], "/")
+	field, err = l.readField()
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.Split(field, "/")
 	newMediaDesc.MediaName.Port.Value, err = parsePort(parts[0])
 	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid port value `%v`", parts[0])
+		return nil, fmt.Errorf("%w `%v`", errSDPInvalidPortValue, parts[0])
 	}
 
 	if len(parts) > 1 {
-		portRange, err := strconv.Atoi(parts[1])
+		var portRange int
+		portRange, err = strconv.Atoi(parts[1])
 		if err != nil {
-			return nil, fmt.Errorf("sdp: invalid value `%v`", parts)
+			return nil, fmt.Errorf("%w `%v`", errSDPInvalidValue, parts)
 		}
 		newMediaDesc.MediaName.Port.Range = &portRange
 	}
 
 	// <proto>
+	field, err = l.readField()
+	if err != nil {
+		return nil, err
+	}
+
 	// Set according to currently registered with IANA
 	// https://tools.ietf.org/html/rfc4566#section-5.14
-	for _, proto := range strings.Split(fields[2], "/") {
-		if i := indexOf(proto, []string{"BFCP", "UDP", "RTP", "AVP", "SAVP", "SAVPF", "TLS", "DTLS", "SCTP", "AVPF"}); i == -1 {
-			return nil, fmt.Errorf("sdp: invalid value `%v`", fields[2])
+	// https://tools.ietf.org/html/rfc4975#section-8.1
+	for _, proto := range strings.Split(field, "/") {
+		if !anyOf(proto, "UDP", "RTP", "AVP", "SAVP", "SAVPF", "TLS", "DTLS", "SCTP", "AVPF", "TCP", "MSRP", "BFCP", "UDT", "IX") {
+			return nil, fmt.Errorf("%w `%v`", errSDPInvalidNumericValue, field)
 		}
 		newMediaDesc.MediaName.Protos = append(newMediaDesc.MediaName.Protos, proto)
 	}
 
 	// <fmt>...
-	for i := 3; i < len(fields); i++ {
-		newMediaDesc.MediaName.Formats = append(newMediaDesc.MediaName.Formats, fields[i])
+	for {
+		field, err = l.readField()
+		if err != nil {
+			return nil, err
+		}
+		if field == "" {
+			break
+		}
+		newMediaDesc.MediaName.Formats = append(newMediaDesc.MediaName.Formats, field)
 	}
 
-	l.desc.MediaDescriptions = append(l.desc.MediaDescriptions, newMediaDesc)
+	if err := l.nextLine(); err != nil {
+		return nil, err
+	}
 
+	l.desc.MediaDescriptions = append(l.desc.MediaDescriptions, &newMediaDesc)
 	return s12, nil
 }
 
 func unmarshalMediaTitle(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
@@ -863,21 +847,17 @@ func unmarshalMediaTitle(l *lexer) (stateFn, error) {
 }
 
 func unmarshalMediaConnectionInformation(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	var err error
+	latestMediaDesc := l.desc.MediaDescriptions[len(l.desc.MediaDescriptions)-1]
+	latestMediaDesc.ConnectionInformation, err = l.unmarshalConnectionInformation()
 	if err != nil {
 		return nil, err
-	}
-
-	latestMediaDesc := l.desc.MediaDescriptions[len(l.desc.MediaDescriptions)-1]
-	latestMediaDesc.ConnectionInformation, err = unmarshalConnectionInformation(value)
-	if err != nil {
-		return nil, fmt.Errorf("sdp: invalid syntax `c=%v`", value)
 	}
 	return s15, nil
 }
 
 func unmarshalMediaBandwidth(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
@@ -885,14 +865,14 @@ func unmarshalMediaBandwidth(l *lexer) (stateFn, error) {
 	latestMediaDesc := l.desc.MediaDescriptions[len(l.desc.MediaDescriptions)-1]
 	bandwidth, err := unmarshalBandwidth(value)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w `b=%v`", errSDPInvalidSyntax, value)
 	}
 	latestMediaDesc.Bandwidth = append(latestMediaDesc.Bandwidth, *bandwidth)
 	return s15, nil
 }
 
 func unmarshalMediaEncryptionKey(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
@@ -904,69 +884,73 @@ func unmarshalMediaEncryptionKey(l *lexer) (stateFn, error) {
 }
 
 func unmarshalMediaAttribute(l *lexer) (stateFn, error) {
-	value, err := readValue(l.input)
+	value, err := l.readLine()
 	if err != nil {
 		return nil, err
 	}
 
 	i := strings.IndexRune(value, ':')
-	var a Attribute
+	a := l.cache.getMediaAttribute()
 	if i > 0 {
-		a = NewAttribute(value[:i], value[i+1:])
+		a.Key = value[:i]
+		a.Value = value[i+1:]
 	} else {
-		a = NewPropertyAttribute(value)
+		a.Key = value
 	}
 
-	latestMediaDesc := l.desc.MediaDescriptions[len(l.desc.MediaDescriptions)-1]
-	latestMediaDesc.Attributes = append(latestMediaDesc.Attributes, a)
 	return s14, nil
 }
 
-func parseTimeUnits(value string) (int64, error) {
+func parseTimeUnits(value string) (num int64, err error) {
+	if len(value) == 0 {
+		return 0, fmt.Errorf("%w `%v`", errSDPInvalidValue, value)
+	}
+	k := timeShorthand(value[len(value)-1])
+	if k > 0 {
+		num, err = strconv.ParseInt(value[:len(value)-1], 10, 64)
+	} else {
+		k = 1
+		num, err = strconv.ParseInt(value, 10, 64)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("%w `%v`", errSDPInvalidValue, value)
+	}
+	return num * k, nil
+}
+
+func timeShorthand(b byte) int64 {
 	// Some time offsets in the protocol can be provided with a shorthand
 	// notation. This code ensures to convert it to NTP timestamp format.
-	//      d - days (86400 seconds)
-	//      h - hours (3600 seconds)
-	//      m - minutes (60 seconds)
-	//      s - seconds (allowed for completeness)
-	switch value[len(value)-1:] {
-	case "d":
-		num, err := strconv.ParseInt(value[:len(value)-1], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("sdp: invalid value `%v`", value)
-		}
-		return num * 86400, nil
-	case "h":
-		num, err := strconv.ParseInt(value[:len(value)-1], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("sdp: invalid value `%v`", value)
-		}
-		return num * 3600, nil
-	case "m":
-		num, err := strconv.ParseInt(value[:len(value)-1], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("sdp: invalid value `%v`", value)
-		}
-		return num * 60, nil
+	switch b {
+	case 'd': // days
+		return 86400
+	case 'h': // hours
+		return 3600
+	case 'm': // minutes
+		return 60
+	case 's': // seconds (allowed for completeness)
+		return 1
+	default:
+		return 0
 	}
-
-	num, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("sdp: invalid value `%v`", value)
-	}
-
-	return num, nil
 }
 
 func parsePort(value string) (int, error) {
 	port, err := strconv.Atoi(value)
 	if err != nil {
-		return 0, fmt.Errorf("sdp: invalid port value `%v`", port)
+		return 0, fmt.Errorf("%w `%v`", errSDPInvalidPortValue, port)
 	}
 
 	if port < 0 || port > 65536 {
-		return 0, fmt.Errorf("sdp: invalid port value -- out of range `%v`", port)
+		return 0, fmt.Errorf("%w -- out of range `%v`", errSDPInvalidPortValue, port)
 	}
 
 	return port, nil
+}
+
+func populateMediaAttributes(c *unmarshalCache, s *SessionDescription) {
+	if len(s.MediaDescriptions) != 0 {
+		lastMediaDesc := s.MediaDescriptions[len(s.MediaDescriptions)-1]
+		lastMediaDesc.Attributes = c.cloneMediaAttributes()
+	}
 }

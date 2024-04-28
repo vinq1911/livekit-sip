@@ -25,7 +25,6 @@ import (
 	"github.com/pion/dtls/v2"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/nack"
-	"github.com/pion/interceptor/pkg/twcc"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
 
@@ -69,62 +68,8 @@ type PCTransportParams struct {
 
 	RetransmitBufferSize uint16
 	Pacer                pacer.Factory
-	Interceptors         []interceptor.Factory
 	OnRTTUpdate          func(rtt uint32)
 	IsSender             bool
-}
-
-func (t *PCTransport) registerDefaultInterceptors(params PCTransportParams, i *interceptor.Registry) error {
-	if params.Pacer != nil {
-		i.Add(sdkinterceptor.NewPacerInterceptorFactory(params.Pacer))
-	}
-
-	// nack interceptor
-	generator := &sdkinterceptor.NackGeneratorInterceptorFactory{}
-	var generatorOption []nack.ResponderOption
-	if params.RetransmitBufferSize > 0 {
-		generatorOption = append(generatorOption, nack.ResponderSize(params.RetransmitBufferSize))
-	}
-	t.nackGenerator = generator
-
-	responder, err := nack.NewResponderInterceptor(generatorOption...)
-	if err != nil {
-		return err
-	}
-	i.Add(generator)
-	i.Add(responder)
-
-	// rtcp report interceptor
-	if err := webrtc.ConfigureRTCPReports(i); err != nil {
-		return err
-	}
-
-	// twcc interceptor
-	twccGenerator, err := twcc.NewSenderInterceptor()
-	if err != nil {
-		return err
-	}
-	i.Add(twccGenerator)
-
-	i.Add(sdkinterceptor.NewLimitSizeInterceptorFactory())
-
-	if params.OnRTTUpdate != nil {
-		i.Add(sdkinterceptor.NewRTTInterceptorFactory(t.handleRTTUpdate))
-	}
-
-	var onXRRtt func(rtt uint32)
-	if params.IsSender {
-		// publisher only responds to XR request for sfu to measure RTT
-		onXRRtt = func(rtt uint32) {}
-	} else {
-		onXRRtt = func(rtt uint32) {
-			t.rttFromXR.Store(true)
-			t.setRTT(rtt)
-		}
-	}
-	i.Add(lkinterceptor.NewRTTFromXRFactory(onXRRtt))
-
-	return nil
 }
 
 func NewPCTransport(params PCTransportParams) (*PCTransport, error) {
@@ -152,29 +97,54 @@ func NewPCTransport(params PCTransportParams) (*PCTransport, error) {
 		onRTTUpdate:        params.OnRTTUpdate,
 	}
 
-	if params.Interceptors != nil {
-		for _, c := range params.Interceptors {
-			i.Add(c)
-		}
-	} else {
-		err := t.registerDefaultInterceptors(params, i)
-		if err != nil {
-			return nil, err
-		}
+	// nack interceptor
+	generator := &sdkinterceptor.NackGeneratorInterceptorFactory{}
+	var generatorOption []nack.ResponderOption
+	if params.RetransmitBufferSize > 0 {
+		generatorOption = append(generatorOption, nack.ResponderSize(params.RetransmitBufferSize))
+	}
+	responder, err := nack.NewResponderInterceptor(generatorOption...)
+	if err != nil {
+		return nil, err
 	}
 
 	m.RegisterFeedback(webrtc.RTCPFeedback{Type: "nack"}, webrtc.RTPCodecTypeVideo)
 	m.RegisterFeedback(webrtc.RTCPFeedback{Type: "nack", Parameter: "pli"}, webrtc.RTPCodecTypeVideo)
 
-	m.RegisterFeedback(webrtc.RTCPFeedback{Type: webrtc.TypeRTCPFBTransportCC}, webrtc.RTPCodecTypeVideo)
-	if err := m.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: sdp.TransportCCURI}, webrtc.RTPCodecTypeVideo); err != nil {
+	if params.Pacer != nil {
+		i.Add(sdkinterceptor.NewPacerInterceptorFactory(params.Pacer))
+	}
+
+	i.Add(responder)
+	i.Add(generator)
+
+	// rtcp report interceptor
+	if err := webrtc.ConfigureRTCPReports(i); err != nil {
 		return nil, err
 	}
 
-	m.RegisterFeedback(webrtc.RTCPFeedback{Type: webrtc.TypeRTCPFBTransportCC}, webrtc.RTPCodecTypeAudio)
-	if err := m.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: sdp.TransportCCURI}, webrtc.RTPCodecTypeAudio); err != nil {
+	// twcc interceptor
+	if err := webrtc.ConfigureTWCCSender(m, i); err != nil {
 		return nil, err
 	}
+
+	i.Add(sdkinterceptor.NewLimitSizeInterceptorFactory())
+
+	if params.OnRTTUpdate != nil {
+		i.Add(sdkinterceptor.NewRTTInterceptorFactory(t.handleRTTUpdate))
+	}
+
+	var onXRRtt func(rtt uint32)
+	if params.IsSender {
+		// publisher only responds to XR request for sfu to measure RTT
+		onXRRtt = func(rtt uint32) {}
+	} else {
+		onXRRtt = func(rtt uint32) {
+			t.rttFromXR.Store(true)
+			t.setRTT(rtt)
+		}
+	}
+	i.Add(lkinterceptor.NewRTTFromXRFactory(onXRRtt))
 
 	se := webrtc.SettingEngine{}
 	se.SetSRTPProtectionProfiles(dtls.SRTP_AEAD_AES_128_GCM, dtls.SRTP_AES128_CM_HMAC_SHA1_80)
@@ -188,6 +158,7 @@ func NewPCTransport(params PCTransportParams) (*PCTransport, error) {
 	}
 
 	t.pc = pc
+	t.nackGenerator = generator
 
 	pc.OnICEGatheringStateChange(t.onICEGatheringStateChange)
 

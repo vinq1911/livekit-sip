@@ -18,7 +18,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
@@ -26,13 +25,9 @@ import (
 	"strings"
 
 	"github.com/magefile/mage/sh"
-
-	"github.com/livekit/mageutil"
 )
 
 var Default = Build
-
-const livekitServerVersion = "master"
 
 func Build() error {
 	fmt.Println("building...")
@@ -96,11 +91,6 @@ func getLocalIPAddresses() ([]string, error) {
 }
 
 func Test() error {
-	fmt.Println("testing local packages...")
-	if err := mageutil.Run(context.Background(), "go test -short ./pkg/... -count=1"); err != nil {
-		return err
-	}
-
 	fmt.Println("starting livekit-server...")
 
 	confString := `
@@ -132,7 +122,7 @@ logging:
 	for p := 30000; p <= 30020; p++ {
 		parameters = append(parameters, fmt.Sprintf("-p%d:%d/udp", p, p))
 	}
-	parameters = append(parameters, []string{`--name`, `livekit-server`, `livekit/livekit-server:` + livekitServerVersion}...)
+	parameters = append(parameters, []string{`--name`, `livekit-server`, `livekit/livekit-server`}...)
 	if addresses, _ := getLocalIPAddresses(); len(addresses) > 0 {
 		fmt.Println("set node ip", addresses[0])
 		parameters = append(parameters, `--node-ip`, addresses[0])

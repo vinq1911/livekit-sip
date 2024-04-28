@@ -18,7 +18,7 @@ type H264Sample []byte
 
 type H264Writer = Writer[H264Sample]
 
-func (s H264Sample) Decode() H264Sample {
+func (s H264Sample) Decode() []byte {
 	/// passthrough for now
 	return s
 }

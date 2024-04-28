@@ -402,13 +402,6 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 		/// c.close("video-timeout")
 	})
 
-	videoConn.OnRTP(c)
-	if err := videoConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
-		return nil, err
-	}
-
-	c.videoRtpConn = videoConn
-
 	offer := sdp.SessionDescription{}
 	logger.Debugw("Offer received", "offer", string(offerData))
 
@@ -417,7 +410,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 		return nil, err
 	}
 	res, err := sdpGetCodecAndType(offer)
-	logger.Debugw("SDP codec and type", "codec", res.Audio.Info().SDPName, "type", string(res.AudioType))
+	logger.Debugw("SDP codec and type", "codec", res.Audio.Info().SDPName, "type", res.AudioType)
 	if err != nil {
 		return nil, err
 	}
@@ -432,15 +425,10 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	if dst := sdpGetAudioDest(offer); dst != nil {
 		audioConn.SetDestAddr(dst)
 	}
+
 	if err := audioConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return nil, err
 	}
-	logger.Debugw("begin listening on UDP", "audio port", audioConn.LocalAddr().Port, "video port", videoConn.LocalAddr().Port)
-
-	c.audioRtpConn = audioConn
-	c.audioCodec = res.Audio
-	c.audioType = res.AudioType
-	c.videoType = res.VideoType
 
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
@@ -454,11 +442,31 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	vsw := rtp.NewSeqWriter(c.videoRtpConn)
 
 	if c.videoType != 0 {
-		logger.Debugw("Creating video stream", "videoType", string(c.videoType))
+		logger.Debugw("Creating video stream", "videoType", c.videoType)
 		vst := vsw.NewStream(c.videoType)
 		vis := rtp.NewMediaStreamOut[media.H264Sample](vst)
 		c.lkRoom.SetVideoOutput(h264.Encode(vis))
 	}
+
+	videoConn.OnRTP(c)
+
+	if vdst := sdpGetVideoDest(offer); vdst != nil {
+		logger.Debugw("Video destination UDP", "address", vdst)
+		videoConn.SetDestAddr(vdst)
+	}
+
+	if err := videoConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+		return nil, err
+	}
+
+	c.audioRtpConn = audioConn
+	c.videoRtpConn = videoConn
+	c.audioCodec = res.Audio
+	c.videoCodec = res.Video
+	c.audioType = res.AudioType
+	c.videoType = res.VideoType
+
+	logger.Debugw("begin listening on UDP", "audio port", audioConn.LocalAddr().Port, "video port", videoConn.LocalAddr().Port)
 
 	return sdpGenerateAnswer(offer, c.s.signalingIp, audioConn.LocalAddr().Port, videoConn.LocalAddr().Port, res)
 }
@@ -595,12 +603,25 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	c.audioHandler.Store(&h)
 
 	if c.videoType != byte(0) {
-		logger.Debugw("Registering Video Handler", "videotype", c.videoType)
-		var vh rtp.Handler = c.videoCodec.DecodeRTP(videoTrack, c.videoType)
+		logger.Debugw("Registering Video Handler", "videotype", c.videoType, "videoCodec", c.videoCodec)
+
+		// var vh rtp.Handler = c.videoCodec.DecodeRTP(videoTrack, c.videoType)
+
+		var vh rtp.Handler = rtpHandlerHack(videoTrack, c.videoType)
 		c.videoHandler.Store(&vh)
 	}
 
 	return nil
+}
+
+func rtpHandlerHack(videoTrack media.Writer[[]byte], videoType byte) rtp.Handler {
+
+	return rtp.HandlerFunc(func(rp *rtp.Packet) error {
+
+		err := videoTrack.WriteSample(rp.Raw)
+
+		return err
+	})
 }
 
 func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, wsUrl, token string) {
