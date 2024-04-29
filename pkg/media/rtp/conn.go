@@ -15,6 +15,7 @@
 package rtp
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -31,8 +32,9 @@ const (
 	timeoutCheckInterval = time.Second * 30
 )
 
-func NewConn(timeoutCallback func()) *Conn {
+func NewConn(timeoutCallback func(), name string) *Conn {
 	c := &Conn{
+		name:    name,
 		readBuf: make([]byte, 1500), // MTU
 	}
 	if timeoutCallback != nil {
@@ -42,6 +44,7 @@ func NewConn(timeoutCallback func()) *Conn {
 }
 
 type Conn struct {
+	name        string
 	wmu         sync.Mutex
 	conn        *net.UDPConn
 	closed      core.Fuse
@@ -53,6 +56,7 @@ type Conn struct {
 }
 
 func (c *Conn) LocalAddr() *net.UDPAddr {
+	//fmt.Printf("LocalAddr %#v\n", c)
 	if c == nil || c.conn == nil {
 		return nil
 	}
@@ -60,15 +64,21 @@ func (c *Conn) LocalAddr() *net.UDPAddr {
 }
 
 func (c *Conn) DestAddr() *net.UDPAddr {
+	//fmt.Printf("DestAddr %#v\n", c)
+	if c == nil {
+		return nil
+	}
 	return c.dest.Load()
 }
 
 func (c *Conn) SetDestAddr(addr *net.UDPAddr) {
-	logger.Debugw("Setting destination address", "address", addr)
+
+	fmt.Printf("SetDestAddr %#v\n", addr)
 	c.dest.Store(addr)
 }
 
 func (c *Conn) OnRTP(h Handler) {
+	//fmt.Printf("OnRTP %#v\n", c)
 	if c == nil {
 		return
 	}
@@ -80,6 +90,7 @@ func (c *Conn) OnRTP(h Handler) {
 }
 
 func (c *Conn) Close() error {
+	//fmt.Printf("Close %#v\n", c)
 	if c == nil {
 		return nil
 	}
@@ -91,28 +102,34 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) Listen(portMin, portMax int, listenAddr string) error {
+	//fmt.Printf("Listen %#v\n", c)
 	if listenAddr == "" {
 		listenAddr = "0.0.0.0"
 	}
 
 	var err error
-	c.conn, err = ListenUDPPortRange(portMin, portMax, net.ParseIP(listenAddr))
-	logger.Debugw("Listener initialized", "conn", c.conn)
+	c.conn, err = ListenUDPPortRange(portMin, portMax, net.ParseIP(listenAddr).To4())
+	logger.Debugw("Listener initialized", "conn", c.conn.LocalAddr())
 	if err != nil {
+		logger.Debugw("Failed to listen on UDP Port", "error", err)
 		return err
 	}
 	return nil
 }
 
 func (c *Conn) ListenAndServe(portMin, portMax int, listenAddr string) error {
+
 	if err := c.Listen(portMin, portMax, listenAddr); err != nil {
+
 		return err
 	}
 	go c.readLoop()
+	fmt.Printf("ListenAndServe %#v\n", c.conn)
 	return nil
 }
 
 func (c *Conn) readLoop() {
+	//fmt.Printf("ReadLoop start %#v\n", c)
 	conn, buf := c.conn, c.readBuf
 	var p rtp.Packet
 	for {
@@ -130,12 +147,15 @@ func (c *Conn) readLoop() {
 		c.packetCount.Add(1)
 		if h := c.onRTP.Load(); h != nil {
 			_ = (*h).HandleRTP(&p)
+		} else {
+			logger.Debugw("RTP Handler load error")
 		}
 	}
 }
 
 func (c *Conn) WriteRTP(p *rtp.Packet) error {
-	addr := c.dest.Load()
+	//fmt.Printf("WriteRTP %#v\n", c)
+	addr := c.DestAddr()
 	if addr == nil {
 		return nil
 	}
@@ -145,11 +165,13 @@ func (c *Conn) WriteRTP(p *rtp.Packet) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	logger.Debugw("RTP Write", "header", p.Header, "remote", addr.String(), "local", c.conn.LocalAddr().String())
 	_, err = c.conn.WriteTo(data, addr)
 	return err
 }
 
 func (c *Conn) ReadRTP() (*rtp.Packet, *net.UDPAddr, error) {
+	//fmt.Printf("ReadRTP %#v\n", c)
 	buf := c.readBuf
 	n, addr, err := c.conn.ReadFromUDP(buf)
 	if err != nil {
@@ -157,12 +179,14 @@ func (c *Conn) ReadRTP() (*rtp.Packet, *net.UDPAddr, error) {
 	}
 	var p rtp.Packet
 	if err = p.Unmarshal(buf[:n]); err != nil {
+		logger.Debugw("RTP Read", "header", p.Header, "remote", c.conn.RemoteAddr().String(), "local", c.conn.LocalAddr().String())
 		return nil, addr, err
 	}
 	return &p, addr, nil
 }
 
 func (c *Conn) onTimeout(timeoutCallback func()) {
+	//fmt.Printf("onTimeout %#v\n", c)
 	go func() {
 		ticker := time.NewTicker(timeoutCheckInterval)
 		defer ticker.Stop()

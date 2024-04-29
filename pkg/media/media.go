@@ -46,12 +46,12 @@ type SwitchWriter[T any] struct {
 	ptr atomic.Pointer[Writer[T]]
 }
 
-func (s *SwitchWriter[T]) Get() Writer[T] {
+func (s *SwitchWriter[T]) Get() *Writer[T] {
 	ptr := s.ptr.Load()
 	if ptr == nil {
 		return nil
 	}
-	return *ptr
+	return ptr
 }
 
 func (s *SwitchWriter[T]) Set(w Writer[T]) {
@@ -68,7 +68,7 @@ func (s *SwitchWriter[T]) WriteSample(sample T) error {
 		return nil
 	}
 
-	return w.WriteSample(sample)
+	return (*w).WriteSample(sample)
 }
 
 type MultiWriter[T any] []Writer[T]

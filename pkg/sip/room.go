@@ -23,10 +23,8 @@ import (
 	"github.com/frostbyte73/core"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/pion/rtp/codecs"
 
 	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/pkg/media/samplebuilder"
 	"github.com/vinq1911/livekit-sip/pkg/config"
 	"github.com/vinq1911/livekit-sip/pkg/media"
 	"github.com/vinq1911/livekit-sip/pkg/media/opus"
@@ -100,6 +98,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 				logger.Debugw("Participant OnTrackSubscribed", "trackID", pub.SID(), "participant", rp.Identity(), "kind", pub.Kind().String(), "mimetype", pub.MimeType())
 
 				mTrack := r.NewTrack()
+				vTrack := r.NewVideoTrack()
 
 				defer mTrack.Close()
 
@@ -117,8 +116,11 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 
 				if track.Kind() == webrtc.RTPCodecTypeVideo {
 
-					th := createVideoTrackHandler(&r.videoIn)
-					_ = rtp.HandleLoop(track, th)
+					hdec := h264.BuildRTCVideoSampleWriter(vTrack)
+					v := rtp.NewMediaStreamIn[media.H264Sample](hdec)
+
+					//th := createVideoTrackHandler(&r.videoIn)
+					_ = rtp.HandleLoop(track, v)
 
 				}
 
@@ -138,7 +140,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 				RoomName:            roomName,
 				ParticipantIdentity: identity,
 				ParticipantKind:     lksdk.ParticipantSIP,
-			}, roomCallback, lksdk.WithAutoSubscribe(false))
+			}, roomCallback, lksdk.WithAutoSubscribe(true))
 	} else {
 		logger.Debugw("Connecting to room with wsUrl and token", "wsurl", wsUrl, "token", token)
 		room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback)
@@ -167,27 +169,30 @@ func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room
 
 func createVideoTrackHandler(track media.H264Writer) rtp.Handler {
 
-	sb := samplebuilder.New(1000, &codecs.H264Packet{}, 90000)
+	//sb := samplebuilder.New(1000, &codecs.H264Packet{}, 90000)
 
 	return rtp.HandlerFunc(func(rp *rtp.Packet) error {
-		sb.Push(rp)
+		//sb.Push(rp)
 		for {
-			p := sb.Pop()
-			if p == nil {
+			//p := sb.Pop()
+			//if p == nil {
+			//	break
+			//}
+			e := track.WriteSample(rp.Payload)
+			if e != nil {
+				logger.Debugw("Error writing video track", "error", e)
 				break
 			}
-
-			track.WriteSample(p.Data)
 		}
 		return nil
 	})
 }
 
-func (r *Room) AudioOutput() media.Writer[media.PCM16Sample] {
+func (r *Room) AudioOutput() *media.Writer[media.PCM16Sample] {
 	return r.audioOut.Get()
 }
 
-func (r *Room) VideoOutput() media.H264Writer {
+func (r *Room) VideoOutput() *media.H264Writer {
 	return r.videoOut.Get()
 }
 
@@ -225,7 +230,7 @@ func (r *Room) Participant() Participant {
 	return r.p
 }
 
-func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Writer[[]byte], error) {
+func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Writer[media.H264Sample], error) {
 	audioTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, r.p.Identity+"-audio", r.p.Identity+"-audio-pion")
 	if err != nil {
 		return nil, nil, err
@@ -259,7 +264,8 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], media.Wri
 		return nil, nil, err
 	}
 
-	vw := h264.BuildSampleWriter[[]byte](videoTrack, rtp.DefFrameDur)
+	vw := h264.BuildRTCLocalSampleWriter(videoTrack)
+
 	return pw, vw, nil
 }
 
@@ -275,9 +281,19 @@ func (r *Room) NewTrack() *Track {
 	return &Track{mix: r.mix, inp: inp}
 }
 
+func (r *Room) NewVideoTrack() *VideoTrack {
+	inp := &r.videoIn
+	return &VideoTrack{out: &r.videoOut, inp: inp}
+}
+
 type Track struct {
 	mix *mixer.Mixer
 	inp *mixer.Input
+}
+
+type VideoTrack struct {
+	out *media.SwitchWriter[media.H264Sample]
+	inp *media.SwitchWriter[media.H264Sample]
 }
 
 func (t *Track) Close() error {
@@ -291,4 +307,8 @@ func (t *Track) PlayAudio(ctx context.Context, frames []media.PCM16Sample) {
 
 func (t *Track) WriteSample(pcm media.PCM16Sample) error {
 	return t.inp.WriteSample(pcm)
+}
+
+func (t *VideoTrack) WriteSample(sample media.H264Sample) error {
+	return t.inp.WriteSample(sample)
 }

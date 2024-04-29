@@ -87,9 +87,10 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	if !codec.Info().RTPIsStatic {
 		cli.audioType = 102
 	}
-	cli.mediaConn = rtp.NewConn(func() {
+	cmc := rtp.NewConn(func() {
 		panic("media-timeout")
-	})
+	}, "client")
+	cli.mediaConn = &cmc
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType)
 	cli.mediaDTMF = cli.media.NewStream(101)

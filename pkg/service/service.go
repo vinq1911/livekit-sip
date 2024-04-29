@@ -118,7 +118,7 @@ func (s *Service) Run() error {
 			if !s.killed.Load() {
 				activeCalls := s.sipServiceActiveCalls()
 				if activeCalls > 0 {
-					fmt.Printf("instance waiting for %d calls to finish", activeCalls)
+					//fmt.Printf("instance waiting for %d calls to finish", activeCalls)
 					time.Sleep(shutdownTimer)
 					continue
 				}

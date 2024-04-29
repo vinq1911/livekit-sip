@@ -6,7 +6,8 @@ logging:
 redis:
   address: localhost:6379
 sip_port: 5062
-rtp_port: 10000-20000
+rtp_audio_port: 10000-20000
+rtp_video_port: 30000-40000
 use_external_ip: false
 use_stun: true
 stun_url: 'stun:127.0.0.1:3478'

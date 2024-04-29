@@ -66,8 +66,9 @@ func testInvite(t *testing.T, h Handler, from, to string, test func(tx sip.Clien
 	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
 
 	s, err := NewService(&config.Config{
-		SIPPort: sipPort,
-		RTPPort: rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+		SIPPort:      sipPort,
+		RTPAudioPort: rtcconfig.PortRange{Start: testPortRTPMin, End: int(testPortRTPMax / 2)},
+		RTPVideoPort: rtcconfig.PortRange{Start: int(testPortRTPMax/2) + 1, End: testPortRTPMax},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, s)

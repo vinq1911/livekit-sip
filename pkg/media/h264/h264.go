@@ -62,7 +62,29 @@ func Decode(w m.H264Writer) m.H264Writer {
 }
 
 type SampleWriter interface {
+	WriteSample(sample m.H264Sample) error
+}
+
+type LocalSampleWriter interface {
 	WriteSample(sample media.Sample) error
+}
+
+func BuildRTCLocalSampleWriter(w LocalSampleWriter) m.Writer[m.H264Sample] {
+	return m.WriterFunc[m.H264Sample](func(in m.H264Sample) error {
+		data := make([]byte, len(in))
+		copy(data, in)
+		/// zero data?
+		return w.WriteSample(media.Sample{Data: data})
+	})
+}
+
+func BuildRTCVideoSampleWriter(w SampleWriter) m.Writer[m.H264Sample] {
+	return m.WriterFunc[m.H264Sample](func(in m.H264Sample) error {
+		data := make([]byte, len(in))
+		copy(data, in)
+		/// zero data?
+		return w.WriteSample(data)
+	})
 }
 
 func BuildSampleWriter[T ~[]byte](w SampleWriter, sampleDur time.Duration) m.Writer[T] {
@@ -70,6 +92,6 @@ func BuildSampleWriter[T ~[]byte](w SampleWriter, sampleDur time.Duration) m.Wri
 		data := make([]byte, len(in))
 		copy(data, in)
 		/// zero data?
-		return w.WriteSample(media.Sample{Data: data})
+		return w.WriteSample(data)
 	})
 }

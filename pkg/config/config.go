@@ -49,7 +49,8 @@ type Config struct {
 	HealthPort     int                 `yaml:"health_port"`
 	PrometheusPort int                 `yaml:"prometheus_port"`
 	SIPPort        int                 `yaml:"sip_port"`
-	RTPPort        rtcconfig.PortRange `yaml:"rtp_port"`
+	RTPAudioPort   rtcconfig.PortRange `yaml:"rtp_audio_port"`
+	RTPVideoPort   rtcconfig.PortRange `yaml:"rtp_video_port"`
 	Logging        logger.Config       `yaml:"logging"`
 	ClusterID      string              `yaml:"cluster_id"` // cluster this instance belongs to
 
@@ -92,11 +93,17 @@ func (conf *Config) Init() error {
 	if conf.SIPPort == 0 {
 		conf.SIPPort = DefaultSIPPort
 	}
-	if conf.RTPPort.Start == 0 {
-		conf.RTPPort.Start = DefaultRTPPortRange.Start
+	if conf.RTPAudioPort.Start == 0 {
+		conf.RTPAudioPort.Start = DefaultRTPPortRange.Start
 	}
-	if conf.RTPPort.End == 0 {
-		conf.RTPPort.End = DefaultRTPPortRange.End
+	if conf.RTPAudioPort.End == 0 {
+		conf.RTPAudioPort.End = int(DefaultRTPPortRange.End / 2)
+	}
+	if conf.RTPVideoPort.Start == 0 {
+		conf.RTPVideoPort.Start = int(DefaultRTPPortRange.End/2) + 1
+	}
+	if conf.RTPVideoPort.End == 0 {
+		conf.RTPVideoPort.End = DefaultRTPPortRange.End
 	}
 
 	if err := conf.InitLogger(); err != nil {

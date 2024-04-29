@@ -18,6 +18,8 @@ import (
 	"errors"
 	"math/rand"
 	"net"
+
+	"github.com/livekit/protocol/logger"
 )
 
 var ListenErr = errors.New("failed to listen on udp port")
@@ -50,6 +52,8 @@ func ListenUDPPortRange(portMin, portMax int, IP net.IP) (*net.UDPConn, error) {
 	for {
 		c, e := net.ListenUDP("udp", &net.UDPAddr{IP: IP, Port: portCurrent})
 		if e == nil {
+			logger.Debugw("Listener configured successfully", "port", portCurrent, "IP", c)
+			//fmt.Printf("Listener configured %#v\n", c)
 			return c, nil
 		}
 
@@ -61,5 +65,6 @@ func ListenUDPPortRange(portMin, portMax int, IP net.IP) (*net.UDPConn, error) {
 			break
 		}
 	}
+	logger.Errorw("Failed to set UDP listener on port range", ListenErr, "portMin", portMin, "portMax", portMax, "IP", IP)
 	return nil, ListenErr
 }

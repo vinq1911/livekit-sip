@@ -71,7 +71,7 @@ type outboundCall struct {
 	mediaRunning  bool
 	lkRoom        *Room
 	lkRoomAudioIn media.Writer[media.PCM16Sample]
-	lkRoomVideoIn media.Writer[[]byte]
+	lkRoomVideoIn media.Writer[media.H264Sample]
 	sipCur        sipOutboundConfig
 	sipInviteReq  *sip.Request
 	sipInviteResp *sip.Response
@@ -82,12 +82,15 @@ func (c *Client) newCall(conf *config.Config, room lkRoomConfig) (*outboundCall,
 	call := &outboundCall{
 		c: c,
 	}
-	call.videoRtpConn = rtp.NewConn(func() {
+	vrtpc := rtp.NewConn(func() {
 		call.close("media-timeout")
-	})
-	call.audioRtpConn = rtp.NewConn(func() {
+	}, "video")
+	artpc := rtp.NewConn(func() {
 		call.close("media-timeout")
-	})
+	}, "audio")
+
+	call.videoRtpConn = vrtpc
+	call.audioRtpConn = artpc
 
 	if err := call.startMedia(conf); err != nil {
 		call.close("media-failed")
@@ -199,10 +202,10 @@ func (c *outboundCall) startMedia(conf *config.Config) error {
 	if c.mediaRunning {
 		return nil
 	}
-	if err := c.audioRtpConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	if err := c.audioRtpConn.ListenAndServe(conf.RTPAudioPort.Start, conf.RTPAudioPort.End, "0.0.0.0"); err != nil {
 		return err
 	}
-	if err := c.videoRtpConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	if err := c.videoRtpConn.ListenAndServe(conf.RTPVideoPort.Start, conf.RTPVideoPort.End, "0.0.0.0"); err != nil {
 		return err
 	}
 	logger.Debugw("begin listening on UDP ports:", "audio", c.audioRtpConn.LocalAddr().Port, "video", c.videoRtpConn.LocalAddr().Port)

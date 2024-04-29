@@ -57,7 +57,8 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		WsUrl:         lk.WsUrl,
 		Redis:         lk.Redis,
 		SIPPort:       sipPort,
-		RTPPort:       rtcconfig.PortRange{Start: 20000, End: 20010},
+		RTPAudioPort:  rtcconfig.PortRange{Start: 20000, End: 20009},
+		RTPVideoPort:  rtcconfig.PortRange{Start: 20010, End: 20019},
 		UseExternalIP: false,
 		Logging:       logger.Config{Level: "debug"},
 	}
