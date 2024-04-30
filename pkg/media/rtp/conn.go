@@ -132,21 +132,30 @@ func (c *Conn) readLoop() {
 	//fmt.Printf("ReadLoop start %#v\n", c)
 	conn, buf := c.conn, c.readBuf
 	var p rtp.Packet
+	var er error
 	for {
 		n, srcAddr, err := conn.ReadFromUDP(buf)
+
 		if err != nil {
+			logger.Debugw("Failed to read from UDP", "error", err)
 			return
 		}
 		c.dest.Store(srcAddr)
 
 		p = rtp.Packet{}
+
 		if err := p.Unmarshal(buf[:n]); err != nil {
+			logger.Debugw("Failed to unmarshal RTP packet", "error", err, "remote", srcAddr.String())
 			continue
 		}
 
 		c.packetCount.Add(1)
 		if h := c.onRTP.Load(); h != nil {
-			_ = (*h).HandleRTP(&p)
+			//fmt.Printf("RTP Read %#v", h)
+			er = (*h).HandleRTP(&p)
+			if er != nil {
+				logger.Debugw("RTP Handler", "error", er, "header", p.Header, "remote", srcAddr.String(), "local", conn.LocalAddr().String())
+			}
 		} else {
 			logger.Debugw("RTP Handler load error")
 		}
@@ -165,21 +174,22 @@ func (c *Conn) WriteRTP(p *rtp.Packet) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	logger.Debugw("RTP Write", "header", p.Header, "remote", addr.String(), "local", c.conn.LocalAddr().String())
+	//logger.Debugw("RTP Write", "header", p.Header, "remote", addr.String(), "local", c.conn.LocalAddr().String())
 	_, err = c.conn.WriteTo(data, addr)
 	return err
 }
 
 func (c *Conn) ReadRTP() (*rtp.Packet, *net.UDPAddr, error) {
-	//fmt.Printf("ReadRTP %#v\n", c)
+
 	buf := c.readBuf
 	n, addr, err := c.conn.ReadFromUDP(buf)
+
 	if err != nil {
 		return nil, nil, err
 	}
 	var p rtp.Packet
 	if err = p.Unmarshal(buf[:n]); err != nil {
-		logger.Debugw("RTP Read", "header", p.Header, "remote", c.conn.RemoteAddr().String(), "local", c.conn.LocalAddr().String())
+		//logger.Debugw("RTP Read", "header", p.Header, "remote", c.conn.RemoteAddr().String(), "local", c.conn.LocalAddr().String())
 		return nil, addr, err
 	}
 	return &p, addr, nil

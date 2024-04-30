@@ -116,6 +116,8 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 
 				if track.Kind() == webrtc.RTPCodecTypeVideo {
 
+					media.NewTrackWriter(track, rp.WritePLI, fileName)
+
 					hdec := h264.BuildRTCVideoSampleWriter(vTrack)
 					v := rtp.NewMediaStreamIn[media.H264Sample](hdec)
 

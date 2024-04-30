@@ -15,9 +15,18 @@
 package h264
 
 import (
+	"errors"
+	"strings"
 	"time"
 
+	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/livekit/server-sdk-go/v2/pkg/samplebuilder"
+	"github.com/pion/rtp/codecs"
+	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/webrtc/v3/pkg/media/h264writer"
+	"github.com/pion/webrtc/v3/pkg/media/ivfwriter"
+	"github.com/pion/webrtc/v3/pkg/media/oggwriter"
 	m "github.com/vinq1911/livekit-sip/pkg/media"
 	"github.com/vinq1911/livekit-sip/pkg/media/rtp"
 )
@@ -70,20 +79,11 @@ type LocalSampleWriter interface {
 }
 
 func BuildRTCLocalSampleWriter(w LocalSampleWriter) m.Writer[m.H264Sample] {
-	return m.WriterFunc[m.H264Sample](func(in m.H264Sample) error {
-		data := make([]byte, len(in))
-		copy(data, in)
-		/// zero data?
-		return w.WriteSample(media.Sample{Data: data})
-	})
-}
 
-func BuildRTCVideoSampleWriter(w SampleWriter) m.Writer[m.H264Sample] {
 	return m.WriterFunc[m.H264Sample](func(in m.H264Sample) error {
-		data := make([]byte, len(in))
-		copy(data, in)
+		//logger.Debugw("Local sample", "sample", in)
 		/// zero data?
-		return w.WriteSample(data)
+		return w.WriteSample(media.Sample{Data: in})
 	})
 }
 
@@ -94,4 +94,71 @@ func BuildSampleWriter[T ~[]byte](w SampleWriter, sampleDur time.Duration) m.Wri
 		/// zero data?
 		return w.WriteSample(data)
 	})
+}
+
+const (
+	maxVideoLate = 1000 // nearly 2s for fhd video
+	maxAudioLate = 200  // 4s for audio
+)
+
+type TrackWriter struct {
+	sb     *samplebuilder.SampleBuilder
+	writer media.Writer
+	track  *webrtc.TrackRemote
+}
+
+func NewTrackWriter(track *webrtc.TrackRemote, pliWriter lksdk.PLIWriter, stream rtp.MediaStreamIn[m.H264Sample]) (*TrackWriter, error) {
+	var (
+		sb     *samplebuilder.SampleBuilder
+		writer media.Writer
+		err    error
+	)
+	switch {
+	case strings.EqualFold(track.Codec().MimeType, "video/vp8"):
+		sb = samplebuilder.New(maxVideoLate, &codecs.VP8Packet{}, track.Codec().ClockRate, samplebuilder.WithPacketDroppedHandler(func() {
+			pliWriter(track.SSRC())
+		}))
+		// ivfwriter use frame count as PTS, that might cause video played in a incorrect framerate(fast or slow)
+		writer, err = ivfwriter.New(fileName + ".ivf")
+
+	case strings.EqualFold(track.Codec().MimeType, "video/h264"):
+		sb = samplebuilder.New(maxVideoLate, &codecs.H264Packet{}, track.Codec().ClockRate, samplebuilder.WithPacketDroppedHandler(func() {
+			pliWriter(track.SSRC())
+		}))
+		writer = h264writer.NewWith(stream)
+
+	case strings.EqualFold(track.Codec().MimeType, "audio/opus"):
+		sb = samplebuilder.New(maxAudioLate, &codecs.OpusPacket{}, track.Codec().ClockRate)
+		writer, err = oggwriter.New(fileName+".ogg", 48000, track.Codec().Channels)
+
+	default:
+		return nil, errors.New("unsupported codec type")
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	t := &TrackWriter{
+		sb:     sb,
+		writer: writer,
+		track:  track,
+	}
+	go t.start()
+	return t, nil
+}
+
+func (t *TrackWriter) start() {
+	defer t.writer.Close()
+	for {
+		pkt, _, err := t.track.ReadRTP()
+		if err != nil {
+			break
+		}
+		t.sb.Push(pkt)
+
+		for _, p := range t.sb.PopPackets() {
+			t.writer.WriteRTP(p)
+		}
+	}
 }
