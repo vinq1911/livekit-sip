@@ -19,14 +19,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/server-sdk-go/v2/pkg/samplebuilder"
 	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
-	"github.com/pion/webrtc/v3/pkg/media/h264writer"
-	"github.com/pion/webrtc/v3/pkg/media/ivfwriter"
-	"github.com/pion/webrtc/v3/pkg/media/oggwriter"
 	m "github.com/vinq1911/livekit-sip/pkg/media"
 	"github.com/vinq1911/livekit-sip/pkg/media/rtp"
 )
@@ -103,36 +101,35 @@ const (
 
 type TrackWriter struct {
 	sb     *samplebuilder.SampleBuilder
-	writer media.Writer
+	writer *rtp.MediaStreamIn[m.H264Sample] // [m.H264Sample]
 	track  *webrtc.TrackRemote
 }
 
-func NewTrackWriter(track *webrtc.TrackRemote, pliWriter lksdk.PLIWriter, stream rtp.MediaStreamIn[m.H264Sample]) (*TrackWriter, error) {
+func NewTrackWriter(track *webrtc.TrackRemote, pliWriter lksdk.PLIWriter, writer *rtp.MediaStreamIn[m.H264Sample]) (*TrackWriter, error) {
+
 	var (
-		sb     *samplebuilder.SampleBuilder
-		writer media.Writer
-		err    error
+		sb  *samplebuilder.SampleBuilder
+		err error
 	)
+
 	switch {
+
 	case strings.EqualFold(track.Codec().MimeType, "video/vp8"):
 		sb = samplebuilder.New(maxVideoLate, &codecs.VP8Packet{}, track.Codec().ClockRate, samplebuilder.WithPacketDroppedHandler(func() {
 			pliWriter(track.SSRC())
 		}))
-		// ivfwriter use frame count as PTS, that might cause video played in a incorrect framerate(fast or slow)
-		writer, err = ivfwriter.New(fileName + ".ivf")
 
 	case strings.EqualFold(track.Codec().MimeType, "video/h264"):
 		sb = samplebuilder.New(maxVideoLate, &codecs.H264Packet{}, track.Codec().ClockRate, samplebuilder.WithPacketDroppedHandler(func() {
 			pliWriter(track.SSRC())
 		}))
-		writer = h264writer.NewWith(stream)
 
 	case strings.EqualFold(track.Codec().MimeType, "audio/opus"):
 		sb = samplebuilder.New(maxAudioLate, &codecs.OpusPacket{}, track.Codec().ClockRate)
-		writer, err = oggwriter.New(fileName+".ogg", 48000, track.Codec().Channels)
 
 	default:
 		return nil, errors.New("unsupported codec type")
+
 	}
 
 	if err != nil {
@@ -144,12 +141,13 @@ func NewTrackWriter(track *webrtc.TrackRemote, pliWriter lksdk.PLIWriter, stream
 		writer: writer,
 		track:  track,
 	}
+
 	go t.start()
 	return t, nil
 }
 
 func (t *TrackWriter) start() {
-	defer t.writer.Close()
+
 	for {
 		pkt, _, err := t.track.ReadRTP()
 		if err != nil {
@@ -158,7 +156,8 @@ func (t *TrackWriter) start() {
 		t.sb.Push(pkt)
 
 		for _, p := range t.sb.PopPackets() {
-			t.writer.WriteRTP(p)
+			logger.Debugw("asking to write rtp", "rtp type", p.PayloadType)
+			t.writer.HandleRTP(p)
 		}
 	}
 }

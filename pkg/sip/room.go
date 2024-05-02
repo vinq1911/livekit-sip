@@ -116,13 +116,14 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 
 				if track.Kind() == webrtc.RTPCodecTypeVideo {
 
-					media.NewTrackWriter(track, rp.WritePLI, fileName)
+					h := rtp.NewMediaStreamIn[media.H264Sample](vTrack)
+					_, err := h264.NewTrackWriter(track, rp.WritePLI, h)
 
-					hdec := h264.BuildRTCVideoSampleWriter(vTrack)
-					v := rtp.NewMediaStreamIn[media.H264Sample](hdec)
-
+					if err != nil {
+						logger.Debugw("Error in h264 writer", "error", err)
+					}
 					//th := createVideoTrackHandler(&r.videoIn)
-					_ = rtp.HandleLoop(track, v)
+					//_ = rtp.HandleLoop(track, v)
 
 				}
 
@@ -284,7 +285,8 @@ func (r *Room) NewTrack() *Track {
 }
 
 func (r *Room) NewVideoTrack() *VideoTrack {
-	inp := &r.videoIn
+	//// TODO: This below should go into Video Mixer instead of directly into output
+	inp := &r.videoOut
 	return &VideoTrack{out: &r.videoOut, inp: inp}
 }
 
@@ -312,5 +314,7 @@ func (t *Track) WriteSample(pcm media.PCM16Sample) error {
 }
 
 func (t *VideoTrack) WriteSample(sample media.H264Sample) error {
+	logger.Debugw("VideoTrack writing sample", "sample", sample)
+
 	return t.inp.WriteSample(sample)
 }

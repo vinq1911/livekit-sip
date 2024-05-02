@@ -176,6 +176,7 @@ func (c *Conn) WriteRTP(p *rtp.Packet) error {
 	defer c.wmu.Unlock()
 	//logger.Debugw("RTP Write", "header", p.Header, "remote", addr.String(), "local", c.conn.LocalAddr().String())
 	_, err = c.conn.WriteTo(data, addr)
+	//_, err = c.conn.WriteTo(data, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 60000})
 	return err
 }
 

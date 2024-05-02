@@ -423,10 +423,17 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
+
 	mux.Register(res.AudioType, newRTPStatsHandler(c.mon, res.Audio.Info().SDPName, rtp.HandlerFunc(c.HandleRTP)))
+
+	if c.videoType != 0 {
+		mux.Register(res.VideoType, newRTPStatsHandler(c.mon, res.Video.Info().SDPName, rtp.HandlerFunc(c.HandleRTP)))
+	}
+
 	if res.DTMFType != 0 {
 		mux.Register(res.DTMFType, newRTPStatsHandler(c.mon, dtmf.SDPName, rtp.HandlerFunc(c.handleDTMF)))
 	}
+
 	audioConn.OnRTP(mux)
 
 	if dst := sdpGetAudioDest(offer); dst != nil {
@@ -443,7 +450,6 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 
 	asw := rtp.NewSeqWriter(c.audioRtpConn)
 	ast := asw.NewStream(c.audioType)
-
 	aus := rtp.NewMediaStreamOut[ulaw.Sample](ast)
 	c.lkRoom.SetAudioOutput(ulaw.Encode(aus))
 
@@ -455,12 +461,11 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 		c.lkRoom.SetVideoOutput(h264.Encode(vis))
 	}
 
-	videoConn.OnRTP(c)
+	videoConn.OnRTP(mux)
 
 	if vdst := sdpGetVideoDest(offer); vdst != nil {
 		logger.Debugw("Video destination UDP", "address", vdst)
 		videoConn.SetDestAddr(vdst)
-
 	}
 
 	if err := videoConn.ListenAndServe(conf.RTPVideoPort.Start, conf.RTPVideoPort.End, "0.0.0.0"); err != nil {
@@ -619,6 +624,7 @@ func rtpHandlerHack(videoTrack media.Writer[media.H264Sample], videoType byte) r
 
 	return rtp.HandlerFunc(func(rp *rtp.Packet) error {
 
+		logger.Debugw("rtpHandlerHack", "videoTrack", videoTrack, "videoType", videoType, "rp", rp, "sample", rp.Payload)
 		err := videoTrack.WriteSample(rp.Payload)
 
 		return err

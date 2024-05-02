@@ -22,8 +22,6 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/vinq1911/livekit-sip/pkg/media/h264"
-
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
@@ -61,6 +59,8 @@ type outboundCall struct {
 	rtpDTMF       *rtp.Stream
 	audioCodec    rtp.AudioCodec
 	audioOut      media.Writer[media.PCM16Sample]
+	videoCodec    rtp.VideoCodec
+	videoOut      media.Writer[media.H264Sample]
 	audioType     byte
 	videoType     byte
 	dtmfType      byte
@@ -274,12 +274,7 @@ func (c *outboundCall) relinkMedia() {
 	}
 	// Encoding pipeline (LK -> SIP)
 	c.lkRoom.SetAudioOutput(c.audioOut)
-
-	sw := rtp.NewSeqWriter(c.videoRtpConn)
-	st := sw.NewStream(c.videoType)
-
-	vis := rtp.NewMediaStreamOut[media.H264Sample](st)
-	c.lkRoom.SetVideoOutput(h264.Encode(vis))
+	c.lkRoom.SetVideoOutput(c.videoOut)
 
 	// Decoding pipeline (SIP -> LK)
 	// law := ulaw.Decode(c.lkRoomAudioIn)
@@ -287,16 +282,19 @@ func (c *outboundCall) relinkMedia() {
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
 	mux.Register(c.audioType, newRTPStatsHandler(c.mon, c.audioCodec.Info().SDPName, h))
+
+	if c.videoType != 0 {
+		v := c.videoCodec.DecodeRTP(c.lkRoomVideoIn, c.videoType)
+		mux.Register(c.videoType, newRTPStatsHandler(c.mon, c.videoCodec.Info().SDPName, v))
+	}
+
 	if c.dtmfType != 0 {
 		mux.Register(c.dtmfType, newRTPStatsHandler(c.mon, dtmf.SDPName, rtp.HandlerFunc(c.handleDTMF)))
 	}
 
 	// c.audioRtpConn.OnRTP(rtp.NewMediaStreamIn(law))
 	c.audioRtpConn.OnRTP(mux)
-
-	// TODO: better video stream handling
-	var vh rtp.Handler = rtp.NewMediaStreamIn(c.lkRoomVideoIn)
-	c.videoRtpConn.OnRTP(vh)
+	c.videoRtpConn.OnRTP(mux)
 
 }
 
